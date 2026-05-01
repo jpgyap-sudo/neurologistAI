@@ -1,0 +1,660 @@
+(() => {
+  // ===== STATE =====
+  const state = {
+    dicomFiles: [],      // { file, arrayBuffer, dataSet, pixelData, width, height }
+    generalFiles: [],    // { file, objectURL, type }
+    activeIndex: 0,      // active dicom slice
+    activeGeneralIndex: -1,
+    ww: 400,
+    wl: 40,
+    scale: 1,
+    panX: 0,
+    panY: 0,
+    tool: 'pan',
+    isDragging: false,
+    dragStart: { x: 0, y: 0 },
+    annotations: [],     // { type, points, text, color }
+    tempAnnotation: null,
+    imgMin: 0,
+    imgMax: 0,
+    imgMean: 0,
+  };
+
+  // ===== DOM =====
+  const canvas = document.getElementById('imageCanvas');
+  const ctx = canvas.getContext('2d');
+  const emptyState = document.getElementById('emptyState');
+  const viewport = document.getElementById('viewport');
+  const overlay = document.getElementById('viewportOverlay');
+  const viewerNav = document.getElementById('viewerNav');
+
+  // ===== HELPERS =====
+  const formatBytes = (bytes) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B','KB','MB','GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
+  const getPixelData = (dataSet) => {
+    const pixelDataElement = dataSet.elements.x7fe00010;
+    if (!pixelDataElement) return null;
+    const bitsAllocated = dataSet.uint16('x00280100') || 16;
+    const pixelRepresentation = dataSet.uint16('x00280103') || 0;
+    const byteArray = new Uint8Array(dataSet.byteArray.buffer, pixelDataElement.dataOffset, pixelDataElement.length);
+    if (bitsAllocated === 16) {
+      return pixelRepresentation === 0 ? new Uint16Array(byteArray.buffer, byteArray.byteOffset, byteArray.byteLength / 2)
+                                       : new Int16Array(byteArray.buffer, byteArray.byteOffset, byteArray.byteLength / 2);
+    }
+    return new Uint8Array(byteArray.buffer, byteArray.byteOffset, byteArray.byteLength);
+  };
+
+  const readFileAsync = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+
+  // ===== DICOM LIST UI =====
+  const renderDicomList = () => {
+    const list = document.getElementById('dicomList');
+    if (state.dicomFiles.length === 0) {
+      list.innerHTML = '<p class="placeholder">No DICOM files attached</p>';
+      return;
+    }
+    const ul = document.createElement('ul');
+    state.dicomFiles.forEach((item, idx) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="fname">${item.file.name}</span><span class="fsize">${formatBytes(item.file.size)}</span>`;
+      li.style.cursor = 'pointer';
+      li.style.color = idx === state.activeIndex && state.activeGeneralIndex === -1 ? '#60a5fa' : '#e5e7eb';
+      li.addEventListener('click', () => {
+        state.activeIndex = idx;
+        state.activeGeneralIndex = -1;
+        renderDicomList();
+        renderGeneralList();
+        loadSlice();
+      });
+      ul.appendChild(li);
+    });
+    list.innerHTML = '';
+    list.appendChild(ul);
+  };
+
+  const renderGeneralList = () => {
+    const list = document.getElementById('generalList');
+    if (state.generalFiles.length === 0) {
+      list.innerHTML = '<p class="placeholder">No files attached</p>';
+      return;
+    }
+    const ul = document.createElement('ul');
+    state.generalFiles.forEach((item, idx) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="fname">${item.file.name}</span><span class="fsize">${formatBytes(item.file.size)}</span>`;
+      li.style.cursor = 'pointer';
+      li.style.color = idx === state.activeGeneralIndex ? '#60a5fa' : '#e5e7eb';
+      li.addEventListener('click', () => {
+        state.activeGeneralIndex = idx;
+        renderGeneralList();
+        renderDicomList();
+        loadGeneralFile();
+      });
+      ul.appendChild(li);
+    });
+    list.innerHTML = '';
+    list.appendChild(ul);
+  };
+
+  const updateAttachedTab = () => {
+    const dicomUl = document.getElementById('attachedDicomList');
+    const generalUl = document.getElementById('attachedGeneralList');
+    dicomUl.innerHTML = state.dicomFiles.map((item, idx) =>
+      `<li class="${idx === state.activeIndex && state.activeGeneralIndex === -1 ? 'active' : ''}">${item.file.name}</li>`
+    ).join('');
+    generalUl.innerHTML = state.generalFiles.map((item, idx) =>
+      `<li class="${idx === state.activeGeneralIndex ? 'active' : ''}">${item.file.name}</li>`
+    ).join('');
+    // click handlers
+    Array.from(dicomUl.children).forEach((li, idx) => {
+      li.addEventListener('click', () => {
+        state.activeIndex = idx; state.activeGeneralIndex = -1;
+        renderDicomList(); renderGeneralList(); loadSlice();
+      });
+    });
+    Array.from(generalUl.children).forEach((li, idx) => {
+      li.addEventListener('click', () => {
+        state.activeGeneralIndex = idx;
+        renderGeneralList(); renderDicomList(); loadGeneralFile();
+      });
+    });
+  };
+
+  // ===== PARSING =====
+  const parseDicom = async (file) => {
+    const arrayBuffer = await readFileAsync(file);
+    try {
+      const byteArray = new Uint8Array(arrayBuffer);
+      const dataSet = dicomParser.parseDicom(byteArray);
+      const width = dataSet.uint16('x00280011') || dataSet.uint16('x00280010') || 512;
+      const height = dataSet.uint16('x00280010') || dataSet.uint16('x00280011') || 512;
+      const pixelData = getPixelData(dataSet);
+      return { file, arrayBuffer, dataSet, pixelData, width, height };
+    } catch (e) {
+      console.warn('Failed to parse DICOM', file.name, e);
+      return null;
+    }
+  };
+
+  // ===== ZIP HANDLING =====
+  const processZip = async (file) => {
+    const zipData = await readFileAsync(file);
+    const zip = await JSZip.loadAsync(zipData);
+    const entries = [];
+    zip.forEach((relativePath, zipEntry) => {
+      if (!zipEntry.dir) entries.push(zipEntry);
+    });
+    for (const entry of entries) {
+      const name = entry.name.toLowerCase();
+      const blob = await entry.async('blob');
+      const extractedFile = new File([blob], entry.name, { type: blob.type || 'application/octet-stream' });
+      if (name.endsWith('.dcm') || name.endsWith('.dicom')) {
+        const parsed = await parseDicom(extractedFile);
+        if (parsed) state.dicomFiles.push(parsed);
+      } else if (/\.(jpg|jpeg|png|bmp|gif|pdf)$/i.test(name)) {
+        const objectURL = URL.createObjectURL(extractedFile);
+        state.generalFiles.push({ file: extractedFile, objectURL, type: extractedFile.type });
+      }
+    }
+  };
+
+  // ===== FILE UPLOADS =====
+  document.getElementById('dicomInput').addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files);
+    for (const file of files) {
+      const name = file.name.toLowerCase();
+      if (name.endsWith('.zip')) {
+        await processZip(file);
+      } else if (name.endsWith('.dcm') || name.endsWith('.dicom')) {
+        const parsed = await parseDicom(file);
+        if (parsed) state.dicomFiles.push(parsed);
+      }
+    }
+    if (state.dicomFiles.length > 0 && state.activeGeneralIndex === -1) {
+      state.activeIndex = 0;
+      loadSlice();
+    }
+    renderDicomList();
+    updateAttachedTab();
+    e.target.value = '';
+  });
+
+  document.getElementById('generalInput').addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files);
+    for (const file of files) {
+      const objectURL = URL.createObjectURL(file);
+      state.generalFiles.push({ file, objectURL, type: file.type });
+    }
+    renderGeneralList();
+    updateAttachedTab();
+    e.target.value = '';
+  });
+
+  // ===== RENDERING =====
+  const computeWindowedImageData = (pixelData, width, height, ww, wl) => {
+    const out = ctx.createImageData(width, height);
+    const data = out.data;
+    const min = wl - ww / 2;
+    const max = wl + ww / 2;
+    let sum = 0, imgMin = Infinity, imgMax = -Infinity;
+    for (let i = 0; i < pixelData.length; i++) {
+      const val = pixelData[i];
+      if (val < imgMin) imgMin = val;
+      if (val > imgMax) imgMax = val;
+      sum += val;
+      let norm = ((val - min) / (max - min)) * 255;
+      norm = Math.max(0, Math.min(255, norm));
+      const idx = i * 4;
+      data[idx] = norm;
+      data[idx + 1] = norm;
+      data[idx + 2] = norm;
+      data[idx + 3] = 255;
+    }
+    state.imgMin = imgMin;
+    state.imgMax = imgMax;
+    state.imgMean = sum / pixelData.length;
+    return out;
+  };
+
+  const drawAnnotations = () => {
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    ctx.save();
+    ctx.translate(cx + state.panX, cy + state.panY);
+    ctx.scale(state.scale, state.scale);
+    ctx.translate(-cx, -cy);
+
+    for (const ann of state.annotations) {
+      ctx.strokeStyle = ann.color || '#f59e0b';
+      ctx.fillStyle = ann.color || '#f59e0b';
+      ctx.lineWidth = 2 / state.scale;
+      if (ann.type === 'measure') {
+        ctx.beginPath();
+        ctx.moveTo(ann.points[0].x, ann.points[0].y);
+        ctx.lineTo(ann.points[1].x, ann.points[1].y);
+        ctx.stroke();
+        const mx = (ann.points[0].x + ann.points[1].x) / 2;
+        const my = (ann.points[0].y + ann.points[1].y) / 2;
+        const dist = Math.hypot(ann.points[1].x - ann.points[0].x, ann.points[1].y - ann.points[0].y);
+        const pxSpacing = getPixelSpacing();
+        const mm = dist * pxSpacing;
+        ctx.fillStyle = '#111';
+        ctx.fillRect(mx - 20, my - 10, 70, 16);
+        ctx.fillStyle = '#f59e0b';
+        ctx.font = `${12 / state.scale}px sans-serif`;
+        ctx.fillText(`${mm.toFixed(1)} mm`, mx - 18, my + 2);
+      } else if (ann.type === 'rect') {
+        const w = ann.points[1].x - ann.points[0].x;
+        const h = ann.points[1].y - ann.points[0].y;
+        ctx.strokeRect(ann.points[0].x, ann.points[0].y, w, h);
+        if (ann.text) {
+          ctx.fillStyle = 'rgba(0,0,0,0.6)';
+          ctx.fillRect(ann.points[0].x, ann.points[0].y - 14 / state.scale, ctx.measureText(ann.text).width + 6, 14 / state.scale);
+          ctx.fillStyle = ann.color;
+          ctx.font = `${12 / state.scale}px sans-serif`;
+          ctx.fillText(ann.text, ann.points[0].x + 2, ann.points[0].y - 2);
+        }
+      } else if (ann.type === 'ellipse') {
+        const cxE = (ann.points[0].x + ann.points[1].x) / 2;
+        const cyE = (ann.points[0].y + ann.points[1].y) / 2;
+        const rx = Math.abs(ann.points[1].x - ann.points[0].x) / 2;
+        const ry = Math.abs(ann.points[1].y - ann.points[0].y) / 2;
+        ctx.beginPath();
+        ctx.ellipse(cxE, cyE, rx, ry, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (ann.type === 'annotate') {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(ann.points[0].x, ann.points[0].y, ctx.measureText(ann.text).width + 6, 16 / state.scale);
+        ctx.fillStyle = ann.color;
+        ctx.font = `${12 / state.scale}px sans-serif`;
+        ctx.fillText(ann.text, ann.points[0].x + 2, ann.points[0].y + 12 / state.scale);
+      }
+    }
+
+    if (state.tempAnnotation) {
+      const ann = state.tempAnnotation;
+      ctx.strokeStyle = '#f59e0b';
+      ctx.setLineDash([4, 4]);
+      if (ann.type === 'measure') {
+        ctx.beginPath();
+        ctx.moveTo(ann.points[0].x, ann.points[0].y);
+        ctx.lineTo(ann.points[1].x, ann.points[1].y);
+        ctx.stroke();
+      } else if (ann.type === 'rect') {
+        const w = ann.points[1].x - ann.points[0].x;
+        const h = ann.points[1].y - ann.points[0].y;
+        ctx.strokeRect(ann.points[0].x, ann.points[0].y, w, h);
+      } else if (ann.type === 'ellipse') {
+        const cxE = (ann.points[0].x + ann.points[1].x) / 2;
+        const cyE = (ann.points[0].y + ann.points[1].y) / 2;
+        const rx = Math.abs(ann.points[1].x - ann.points[0].x) / 2;
+        const ry = Math.abs(ann.points[1].y - ann.points[0].y) / 2;
+        ctx.beginPath();
+        ctx.ellipse(cxE, cyE, rx, ry, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+
+    ctx.restore();
+  };
+
+  const getPixelSpacing = () => {
+    // Try to read from DICOM; default 1 mm/pixel
+    const item = state.dicomFiles[state.activeIndex];
+    if (!item || !item.dataSet) return 1;
+    const el = item.dataSet.elements.x00280030;
+    if (el && el.length > 0) {
+      const str = item.dataSet.string('x00280030');
+      const parts = str.split('\\');
+      if (parts.length >= 1) return parseFloat(parts[0]) || 1;
+    }
+    return 1;
+  };
+
+  const renderSlice = () => {
+    const item = state.dicomFiles[state.activeIndex];
+    if (!item || !item.pixelData) return;
+    const { width, height, pixelData } = item;
+    canvas.width = width;
+    canvas.height = height;
+    const imgData = computeWindowedImageData(pixelData, width, height, state.ww, state.wl);
+    ctx.putImageData(imgData, 0, 0);
+    drawAnnotations();
+    updateInfo();
+  };
+
+  const loadSlice = () => {
+    if (state.dicomFiles.length === 0) return;
+    emptyState.style.display = 'none';
+    canvas.style.display = 'block';
+    if (state.dicomFiles.length > 1) viewerNav.style.display = 'flex';
+    document.getElementById('sliceInfo').textContent = `${state.activeIndex + 1} / ${state.dicomFiles.length}`;
+    state.scale = 1; state.panX = 0; state.panY = 0;
+    state.annotations = [];
+    renderSlice();
+    updateAttachedTab();
+  };
+
+  const loadGeneralFile = () => {
+    const item = state.generalFiles[state.activeGeneralIndex];
+    if (!item) return;
+    emptyState.style.display = 'none';
+    canvas.style.display = 'block';
+    viewerNav.style.display = 'none';
+    if (item.type.startsWith('image/')) {
+      const img = new Image();
+      img.onload = () => {
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        ctx.drawImage(img, 0, 0);
+        drawAnnotations();
+        state.imgMin = 0; state.imgMax = 255; state.imgMean = 128;
+        updateInfo();
+      };
+      img.src = item.objectURL;
+    } else {
+      // PDF or other: show placeholder on canvas
+      canvas.width = 512; canvas.height = 512;
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, 512, 512);
+      ctx.fillStyle = '#e5e7eb';
+      ctx.font = '16px sans-serif';
+      ctx.fillText(`Preview not available for ${item.file.name}`, 40, 256);
+      state.imgMin = 0; state.imgMax = 0; state.imgMean = 0;
+      updateInfo();
+    }
+    updateAttachedTab();
+  };
+
+  const updateInfo = () => {
+    document.getElementById('propDims').textContent = `${canvas.width} x ${canvas.height}`;
+    document.getElementById('propMin').textContent = state.imgMin.toFixed(1);
+    document.getElementById('propMax').textContent = state.imgMax.toFixed(1);
+    document.getElementById('propMean').textContent = state.imgMean.toFixed(1);
+  };
+
+  // ===== WINDOW / LEVEL =====
+  const wwSlider = document.getElementById('wwSlider');
+  const wlSlider = document.getElementById('wlSlider');
+  const wwValue = document.getElementById('wwValue');
+  const wlValue = document.getElementById('wlValue');
+
+  const updateWindowLevel = () => {
+    state.ww = parseInt(wwSlider.value, 10);
+    state.wl = parseInt(wlSlider.value, 10);
+    wwValue.textContent = state.ww;
+    wlValue.textContent = state.wl;
+    if (state.activeGeneralIndex === -1) renderSlice();
+  };
+  wwSlider.addEventListener('input', updateWindowLevel);
+  wlSlider.addEventListener('input', updateWindowLevel);
+
+  document.querySelectorAll('.preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      wwSlider.value = btn.dataset.ww;
+      wlSlider.value = btn.dataset.wl;
+      updateWindowLevel();
+    });
+  });
+
+  // ===== TOOLS =====
+  document.querySelectorAll('.tool-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.tool = btn.dataset.tool;
+    });
+  });
+
+  document.getElementById('clearAnnotations').addEventListener('click', () => {
+    state.annotations = [];
+    if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
+  });
+
+  document.getElementById('resetView').addEventListener('click', () => {
+    state.scale = 1; state.panX = 0; state.panY = 0;
+    if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
+  });
+
+  // ===== MOUSE INTERACTIONS =====
+  const toCanvasCoords = (clientX, clientY) => {
+    const rect = canvas.getBoundingClientRect();
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const x = (clientX - rect.left - (cx + state.panX)) / state.scale + cx;
+    const y = (clientY - rect.top - (cy + state.panY)) / state.scale + cy;
+    return { x, y };
+  };
+
+  canvas.addEventListener('mousedown', (e) => {
+    state.isDragging = true;
+    state.dragStart = { x: e.clientX, y: e.clientY };
+    const pt = toCanvasCoords(e.clientX, e.clientY);
+    if (state.tool === 'measure' || state.tool === 'rect' || state.tool === 'ellipse') {
+      state.tempAnnotation = { type: state.tool, points: [pt, pt] };
+    } else if (state.tool === 'annotate') {
+      const text = prompt('Enter annotation text:');
+      if (text) {
+        state.annotations.push({ type: 'annotate', points: [pt], text, color: '#f59e0b' });
+        if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
+      }
+      state.isDragging = false;
+    }
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (!state.isDragging) return;
+    const dx = e.clientX - state.dragStart.x;
+    const dy = e.clientY - state.dragStart.y;
+    if (state.tool === 'pan') {
+      state.panX += dx;
+      state.panY += dy;
+      state.dragStart = { x: e.clientX, y: e.clientY };
+      if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
+    } else if (state.tool === 'window') {
+      state.ww = Math.max(1, state.ww + dx * 2);
+      state.wl = Math.max(-1000, Math.min(1000, state.wl + dy * 2));
+      wwSlider.value = state.ww;
+      wlSlider.value = state.wl;
+      wwValue.textContent = Math.round(state.ww);
+      wlValue.textContent = Math.round(state.wl);
+      state.dragStart = { x: e.clientX, y: e.clientY };
+      if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
+    } else if (state.tool === 'zoom') {
+      const delta = dy * -0.005;
+      state.scale = Math.max(0.1, Math.min(10, state.scale + delta));
+      state.dragStart = { x: e.clientX, y: e.clientY };
+      if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
+    } else if (state.tempAnnotation) {
+      state.tempAnnotation.points[1] = toCanvasCoords(e.clientX, e.clientY);
+      if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
+    }
+  });
+
+  canvas.addEventListener('mouseup', (e) => {
+    if (!state.isDragging) return;
+    state.isDragging = false;
+    if (state.tempAnnotation) {
+      state.tempAnnotation.points[1] = toCanvasCoords(e.clientX, e.clientY);
+      const ann = state.tempAnnotation;
+      state.tempAnnotation = null;
+      if (ann.type === 'measure') {
+        const dist = Math.hypot(ann.points[1].x - ann.points[0].x, ann.points[1].y - ann.points[0].y);
+        const pxSpacing = getPixelSpacing();
+        const mm = dist * pxSpacing;
+        state.annotations.push({ type: 'measure', points: ann.points, color: '#f59e0b' });
+        addMeasurement(mm);
+      } else if (ann.type === 'rect') {
+        const text = prompt('ROI label (optional):') || '';
+        state.annotations.push({ type: 'rect', points: ann.points, text, color: '#34d399' });
+        computeRoiStats(ann.points, 'rect');
+      } else if (ann.type === 'ellipse') {
+        state.annotations.push({ type: 'ellipse', points: ann.points, color: '#60a5fa' });
+        computeRoiStats(ann.points, 'ellipse');
+      }
+      if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
+    }
+  });
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const delta = e.deltaY * -0.001;
+    state.scale = Math.max(0.1, Math.min(10, state.scale + delta));
+    if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
+  }, { passive: false });
+
+  // ===== MEASUREMENTS =====
+  const measurementList = document.getElementById('measurementList');
+  const addMeasurement = (mm) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span>Length</span><span>${mm.toFixed(1)} mm</span>`;
+    measurementList.appendChild(li);
+  };
+
+  // ===== ROI STATS =====
+  const computeRoiStats = (points, shape) => {
+    const item = state.dicomFiles[state.activeIndex];
+    if (!item || !item.pixelData) {
+      document.getElementById('roiStats').textContent = 'ROI stats only available for DICOM data.';
+      return;
+    }
+    const { width, pixelData } = item;
+    const x1 = Math.min(points[0].x, points[1].x);
+    const x2 = Math.max(points[0].x, points[1].x);
+    const y1 = Math.min(points[0].y, points[1].y);
+    const y2 = Math.max(points[0].y, points[1].y);
+    let count = 0, sum = 0, min = Infinity, max = -Infinity;
+    for (let y = Math.floor(y1); y <= Math.ceil(y2); y++) {
+      for (let x = Math.floor(x1); x <= Math.ceil(x2); x++) {
+        if (x < 0 || y < 0 || x >= item.width || y >= item.height) continue;
+        let inside = true;
+        if (shape === 'ellipse') {
+          const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+          const rx = (x2 - x1) / 2, ry = (y2 - y1) / 2;
+          inside = ((Math.pow(x - cx, 2) / Math.pow(rx, 2)) + (Math.pow(y - cy, 2) / Math.pow(ry, 2))) <= 1;
+        }
+        if (inside) {
+          const idx = y * width + x;
+          const v = pixelData[idx];
+          sum += v; min = Math.min(min, v); max = Math.max(max, v); count++;
+        }
+      }
+    }
+    const mean = count ? (sum / count) : 0;
+    document.getElementById('roiStats').innerHTML = `
+      <div class="prop-row"><span>Pixels:</span> <span>${count}</span></div>
+      <div class="prop-row"><span>Min:</span> <span>${min === Infinity ? '-' : min.toFixed(1)}</span></div>
+      <div class="prop-row"><span>Max:</span> <span>${max === -Infinity ? '-' : max.toFixed(1)}</span></div>
+      <div class="prop-row"><span>Mean:</span> <span>${mean.toFixed(1)}</span></div>
+    `;
+  };
+
+  // ===== SLICE NAVIGATION =====
+  document.getElementById('prevSlice').addEventListener('click', () => {
+    if (state.activeIndex > 0) { state.activeIndex--; loadSlice(); }
+  });
+  document.getElementById('nextSlice').addEventListener('click', () => {
+    if (state.activeIndex < state.dicomFiles.length - 1) { state.activeIndex++; loadSlice(); }
+  });
+
+  // ===== TABS =====
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById(btn.dataset.tab + 'Tab').classList.add('active');
+    });
+  });
+
+  // ===== EXPORT IMAGE =====
+  document.getElementById('exportImage').addEventListener('click', () => {
+    const link = document.createElement('a');
+    link.download = `ctscan_slice_${state.activeIndex + 1}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  });
+
+  // ===== REPORT =====
+  document.getElementById('generateReport').addEventListener('click', () => {
+    const patientId = document.getElementById('patientId').value || 'N/A';
+    const studyDate = document.getElementById('studyDate').value || new Date().toISOString().split('T')[0];
+    const bodyPart = document.getElementById('bodyPart').value;
+    const history = document.getElementById('clinicalHistory').value;
+    const findings = document.getElementById('findings').value;
+    const impression = document.getElementById('impression').value;
+    const recommendations = document.getElementById('recommendations').value;
+
+    const html = `
+      <div style="font-family:Arial,sans-serif; line-height:1.5; color:#111;">
+        <h2 style="text-align:center; margin-bottom:4px;">Radiology Report</h2>
+        <hr>
+        <table style="width:100%; font-size:14px; margin-bottom:12px;">
+          <tr><td><strong>Patient ID:</strong></td><td>${escapeHtml(patientId)}</td></tr>
+          <tr><td><strong>Study Date:</strong></td><td>${escapeHtml(studyDate)}</td></tr>
+          <tr><td><strong>Body Part:</strong></td><td>${escapeHtml(bodyPart)}</td></tr>
+        </table>
+        <h3>Clinical History / Indication</h3>
+        <p>${escapeHtml(history) || 'N/A'}</p>
+        <h3>Findings</h3>
+        <p>${escapeHtml(findings) || 'N/A'}</p>
+        <h3>Impression</h3>
+        <p>${escapeHtml(impression) || 'N/A'}</p>
+        <h3>Recommendations</h3>
+        <p>${escapeHtml(recommendations) || 'N/A'}</p>
+        <hr>
+        <p style="font-size:12px; color:#555;">
+          <strong>Disclaimer:</strong> This report was generated using a demonstration/educational tool and does not constitute a medical diagnosis. Final interpretation should be performed by a board-certified radiologist.
+        </p>
+      </div>
+    `;
+    document.getElementById('reportOutput').innerHTML = html;
+    document.getElementById('reportModal').classList.add('active');
+  });
+
+  document.getElementById('closeReport').addEventListener('click', () => {
+    document.getElementById('reportModal').classList.remove('active');
+  });
+
+  const escapeHtml = (str) => {
+    if (!str) return '';
+    return str.replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>');
+  };
+
+  // ===== DROP ZONE =====
+  viewport.addEventListener('dragover', (e) => { e.preventDefault(); viewport.style.border = '2px dashed #2563eb'; });
+  viewport.addEventListener('dragleave', () => { viewport.style.border = 'none'; });
+  viewport.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    viewport.style.border = 'none';
+    const files = Array.from(e.dataTransfer.files);
+    for (const file of files) {
+      const name = file.name.toLowerCase();
+      if (name.endsWith('.zip')) {
+        await processZip(file);
+      } else if (name.endsWith('.dcm') || name.endsWith('.dicom')) {
+        const parsed = await parseDicom(file);
+        if (parsed) state.dicomFiles.push(parsed);
+      } else if (/\.(jpg|jpeg|png|bmp|gif|pdf)$/i.test(name)) {
+        const objectURL = URL.createObjectURL(file);
+        state.generalFiles.push({ file, objectURL, type: file.type });
+      }
+    }
+    if (state.dicomFiles.length > 0 && state.activeGeneralIndex === -1) {
+      state.activeIndex = 0; loadSlice();
+    }
+    renderDicomList(); renderGeneralList(); updateAttachedTab();
+  });
+})();

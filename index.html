@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CT Scan Analyzer</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>CT Scan Analyzer</h1>
+    <p class="disclaimer">
+      <strong>Disclaimer:</strong> This tool is for educational and demonstration purposes only.
+      It does not provide medical diagnoses. Always consult a qualified radiologist or physician for interpretation of medical imaging.
+    </p>
+  </header>
+
+  <main class="app-main">
+    <aside class="toolbar">
+      <div class="tool-section">
+        <h3>DICOM Images</h3>
+        <label class="file-label">
+          <input type="file" id="dicomInput" accept=".dcm,application/dicom,application/zip,.zip" multiple hidden>
+          <span class="btn">Attach DICOM / ZIP</span>
+        </label>
+        <div class="file-list" id="dicomList">
+          <p class="placeholder">No DICOM files attached</p>
+        </div>
+      </div>
+
+      <div class="tool-section">
+        <h3>Other Files</h3>
+        <label class="file-label">
+          <input type="file" id="generalInput" accept="image/*,application/pdf,.pdf,.jpg,.jpeg,.png,.bmp,.gif" multiple hidden>
+          <span class="btn secondary">Attach PDF / Images</span>
+        </label>
+        <div class="file-list" id="generalList">
+          <p class="placeholder">No files attached</p>
+        </div>
+      </div>
+
+      <div class="tool-section">
+        <h3>Window / Level</h3>
+        <label for="wwSlider">Width (WW)</label>
+        <input type="range" id="wwSlider" min="1" max="2000" value="400">
+        <span id="wwValue">400</span>
+
+        <label for="wlSlider">Level (WL)</label>
+        <input type="range" id="wlSlider" min="-1000" max="1000" value="40">
+        <span id="wlValue">40</span>
+
+        <div class="presets">
+          <button class="preset-btn" data-ww="1500" data-wl="-600">Lung</button>
+          <button class="preset-btn" data-ww="80" data-wl="40">Soft Tissue</button>
+          <button class="preset-btn" data-ww="2000" data-wl="400">Bone</button>
+          <button class="preset-btn" data-ww="80" data-wl="35">Brain</button>
+          <button class="preset-btn" data-ww="350" data-wl="50">Abdomen</button>
+        </div>
+      </div>
+
+      <div class="tool-section">
+        <h3>Tools</h3>
+        <div class="tool-group">
+          <button class="tool-btn active" data-tool="pan" title="Pan">Pan</button>
+          <button class="tool-btn" data-tool="zoom" title="Zoom">Zoom</button>
+          <button class="tool-btn" data-tool="window" title="Adjust Window/Level">W/L</button>
+          <button class="tool-btn" data-tool="measure" title="Measure Length">Measure</button>
+          <button class="tool-btn" data-tool="rect" title="Rectangle ROI">Rect ROI</button>
+          <button class="tool-btn" data-tool="ellipse" title="Ellipse ROI">Ellipse ROI</button>
+          <button class="tool-btn" data-tool="annotate" title="Annotate">Note</button>
+        </div>
+        <button class="btn secondary" id="clearAnnotations">Clear All</button>
+        <button class="btn secondary" id="resetView">Reset View</button>
+      </div>
+
+      <div class="tool-section">
+        <h3>Export</h3>
+        <button class="btn" id="exportImage" title="Save current DICOM slice as image">Generate Image from DICOM</button>
+      </div>
+    </aside>
+
+    <section class="viewport" id="viewport">
+      <canvas id="imageCanvas"></canvas>
+      <div class="empty-state" id="emptyState">
+        <p>Attach DICOM or image files to begin</p>
+        <small>Supports DICOM (.dcm), ZIP archives, and standard images (JPG, PNG, BMP, GIF, PDF)</small>
+      </div>
+      <div class="viewport-overlay" id="viewportOverlay"></div>
+      <div class="viewer-nav" id="viewerNav" style="display:none;">
+        <button id="prevSlice">&#9664; Prev</button>
+        <span id="sliceInfo">1 / 1</span>
+        <button id="nextSlice">Next &#9654;</button>
+      </div>
+    </section>
+
+    <aside class="analysis-panel">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="analysis">Analysis</button>
+        <button class="tab-btn" data-tab="report">Report</button>
+        <button class="tab-btn" data-tab="attached">Attached</button>
+      </div>
+
+      <div class="tab-content active" id="analysisTab">
+        <div class="info-group">
+          <h4>Image Properties</h4>
+          <div class="prop-row"><span>Dimensions:</span> <span id="propDims">-</span></div>
+          <div class="prop-row"><span>Min Value:</span> <span id="propMin">-</span></div>
+          <div class="prop-row"><span>Max Value:</span> <span id="propMax">-</span></div>
+          <div class="prop-row"><span>Mean:</span> <span id="propMean">-</span></div>
+        </div>
+        <div class="info-group">
+          <h4>ROI Statistics</h4>
+          <div id="roiStats">Draw an ROI to see statistics.</div>
+        </div>
+        <div class="info-group">
+          <h4>Measurements</h4>
+          <ul id="measurementList"></ul>
+        </div>
+      </div>
+
+      <div class="tab-content" id="reportTab">
+        <div class="form-group">
+          <label for="patientId">Patient ID</label>
+          <input type="text" id="patientId" placeholder="Optional">
+        </div>
+        <div class="form-group">
+          <label for="studyDate">Study Date</label>
+          <input type="date" id="studyDate">
+        </div>
+        <div class="form-group">
+          <label for="bodyPart">Body Part</label>
+          <select id="bodyPart">
+            <option>Head / Brain</option>
+            <option>Chest / Thorax</option>
+            <option>Abdomen</option>
+            <option>Pelvis</option>
+            <option>Spine</option>
+            <option>Extremity</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="clinicalHistory">Clinical History / Indication</label>
+          <textarea id="clinicalHistory" rows="2" placeholder="Reason for scan..."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="findings">Findings</label>
+          <textarea id="findings" rows="4" placeholder="Describe observations..."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="impression">Impression</label>
+          <textarea id="impression" rows="3" placeholder="Summary impression..."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="recommendations">Recommendations</label>
+          <textarea id="recommendations" rows="2" placeholder="Follow-up or further studies..."></textarea>
+        </div>
+        <button class="btn" id="generateReport">Generate Report</button>
+      </div>
+
+      <div class="tab-content" id="attachedTab">
+        <div class="info-group">
+          <h4>DICOM Files</h4>
+          <ul id="attachedDicomList" class="attached-list"></ul>
+        </div>
+        <div class="info-group">
+          <h4>Other Files</h4>
+          <ul id="attachedGeneralList" class="attached-list"></ul>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <div class="report-modal" id="reportModal">
+    <div class="report-content">
+      <button class="close-btn" id="closeReport">&times;</button>
+      <div id="reportOutput"></div>
+      <button class="btn" onclick="window.print()">Print / Save PDF</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://unpkg.com/dicom-parser@1.8.21/dist/dicomParser.min.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
