@@ -40,10 +40,10 @@
     <aside class="toolbar">
       <div class="tool-section">
         <h3>DICOM Images</h3>
-        <label class="file-label">
-          <input type="file" id="dicomInput" accept=".dcm,application/dicom,application/zip,.zip" multiple hidden>
-          <span class="btn">Attach DICOM / ZIP</span>
-        </label>
+        <input type="file" id="dicomInput" multiple hidden>
+        <input type="file" id="dicomFolderInput" multiple webkitdirectory directory hidden>
+        <button class="btn" id="attachDicomBtn" type="button">Attach DICOM / ZIP</button>
+        <button class="btn secondary" id="attachDicomFolderBtn" type="button">Attach DICOM Folder</button>
         <div class="file-list" id="dicomList">
           <p class="placeholder">No DICOM files attached</p>
         </div>

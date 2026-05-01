@@ -57,6 +57,13 @@
     reader.readAsArrayBuffer(file);
   });
 
+  const setDicomMessage = (message, isError = false) => {
+    const list = document.getElementById('dicomList');
+    if (state.dicomFiles.length === 0) {
+      list.innerHTML = `<p class="placeholder ${isError ? 'error' : ''}">${message}</p>`;
+    }
+  };
+
   // ===== DICOM LIST UI =====
   const renderDicomList = () => {
     const list = document.getElementById('dicomList');
@@ -133,6 +140,11 @@
 
   // ===== PARSING =====
   const parseDicom = async (file) => {
+    if (typeof dicomParser === 'undefined') {
+      setDicomMessage('DICOM parser did not load. Check your internet connection, then refresh this local page.', true);
+      return null;
+    }
+
     const arrayBuffer = await readFileAsync(file);
     try {
       const byteArray = new Uint8Array(arrayBuffer);
@@ -143,12 +155,18 @@
       return { file, arrayBuffer, dataSet, pixelData, width, height };
     } catch (e) {
       console.warn('Failed to parse DICOM', file.name, e);
+      setDicomMessage(`Could not read ${file.name || 'selected file'} as DICOM.`, true);
       return null;
     }
   };
 
   // ===== ZIP HANDLING =====
   const processZip = async (file) => {
+    if (typeof JSZip === 'undefined') {
+      setDicomMessage('ZIP support did not load. Check your internet connection, then refresh this local page.', true);
+      return;
+    }
+
     const zipData = await readFileAsync(file);
     const zip = await JSZip.loadAsync(zipData);
     const entries = [];
@@ -170,13 +188,15 @@
   };
 
   // ===== FILE UPLOADS =====
-  document.getElementById('dicomInput').addEventListener('change', async (e) => {
-    const files = Array.from(e.target.files);
+  const handleDicomSelection = async (files) => {
+    if (files.length === 0) return;
+    setDicomMessage(`Reading ${files.length} selected file${files.length === 1 ? '' : 's'}...`);
+
     for (const file of files) {
       const name = file.name.toLowerCase();
       if (name.endsWith('.zip')) {
         await processZip(file);
-      } else if (name.endsWith('.dcm') || name.endsWith('.dicom')) {
+      } else if (!/\.(jpg|jpeg|png|bmp|gif|pdf)$/i.test(name)) {
         const parsed = await parseDicom(file);
         if (parsed) state.dicomFiles.push(parsed);
       }
@@ -187,6 +207,20 @@
     }
     renderDicomList();
     updateAttachedTab();
+  };
+
+  const dicomInput = document.getElementById('dicomInput');
+  const dicomFolderInput = document.getElementById('dicomFolderInput');
+  document.getElementById('attachDicomBtn').addEventListener('click', () => dicomInput.click());
+  document.getElementById('attachDicomFolderBtn').addEventListener('click', () => dicomFolderInput.click());
+
+  dicomInput.addEventListener('change', async (e) => {
+    await handleDicomSelection(Array.from(e.target.files));
+    e.target.value = '';
+  });
+
+  dicomFolderInput.addEventListener('change', async (e) => {
+    await handleDicomSelection(Array.from(e.target.files));
     e.target.value = '';
   });
 
@@ -644,7 +678,7 @@
       const name = file.name.toLowerCase();
       if (name.endsWith('.zip')) {
         await processZip(file);
-      } else if (name.endsWith('.dcm') || name.endsWith('.dicom')) {
+      } else if (!/\.(jpg|jpeg|png|bmp|gif|pdf)$/i.test(name)) {
         const parsed = await parseDicom(file);
         if (parsed) state.dicomFiles.push(parsed);
       } else if (/\.(jpg|jpeg|png|bmp|gif|pdf)$/i.test(name)) {
