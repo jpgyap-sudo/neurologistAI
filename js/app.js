@@ -657,4 +657,63 @@
     }
     renderDicomList(); renderGeneralList(); updateAttachedTab();
   });
+
+  // ===== AI CHAT =====
+  const chatMessages = document.getElementById('chatMessages');
+  const chatInput = document.getElementById('chatInput');
+  const chatSend = document.getElementById('chatSend');
+
+  const appendChat = (text, sender) => {
+    const bubble = document.createElement('div');
+    bubble.className = `chat-bubble ${sender}`;
+    bubble.innerHTML = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
+    chatMessages.appendChild(bubble);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  };
+
+  const showTyping = () => {
+    const typing = document.createElement('div');
+    typing.className = 'typing';
+    typing.id = 'typingIndicator';
+    typing.innerHTML = '<span></span><span></span><span></span>';
+    chatMessages.appendChild(typing);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  };
+
+  const hideTyping = () => {
+    const el = document.getElementById('typingIndicator');
+    if (el) el.remove();
+  };
+
+  const sendChat = async () => {
+    const text = chatInput.value.trim();
+    if (!text) return;
+    appendChat(text, 'user');
+    chatInput.value = '';
+    showTyping();
+    // Simulate realistic latency
+    await new Promise(r => setTimeout(r, 600 + Math.random() * 800));
+    hideTyping();
+    const reply = typeof generateResponse === 'function' ? generateResponse(text) : 'I am not available right now.';
+    appendChat(reply, 'ai');
+  };
+
+  chatSend.addEventListener('click', sendChat);
+  chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+
+  document.querySelectorAll('.chat-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      chatInput.value = chip.textContent;
+      sendChat();
+    });
+  });
+
+  // Initial greeting
+  appendChat(`Hello. I am your neurology and neurosurgery assistant. I can help with:
+- Hydrocephalus types, imaging, and management
+- Distinguishing hydrocephalus ex vacuo from true hydrocephalus
+- Basal ganglia hemorrhage (putaminal, caudate, thalamic)
+- General neurocritical care (ICP, GCS, stroke, herniation)
+
+How can I assist you today?`, 'ai');
 })();

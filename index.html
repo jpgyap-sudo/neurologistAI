@@ -16,6 +16,27 @@
   </header>
 
   <main class="app-main">
+    <!-- AI Chat Panel -->
+    <aside class="chat-panel" id="chatPanel">
+      <div class="chat-header">
+        <h2>NeuroAI Assistant</h2>
+        <p class="chat-subtitle">Neurologist & Neurosurgeon AI</p>
+      </div>
+      <div class="chat-messages" id="chatMessages"></div>
+      <div class="chat-input-area">
+        <input type="text" id="chatInput" placeholder="Ask about hydrocephalus, hemorrhage, imaging..." autocomplete="off">
+        <button id="chatSend">Send</button>
+      </div>
+      <div class="chat-suggestions" id="chatSuggestions">
+        <button class="chat-chip">Types of hydrocephalus?</button>
+        <button class="chat-chip">Hydrocephalus ex vacuo vs true</button>
+        <button class="chat-chip">Basal ganglia hemorrhage causes</button>
+        <button class="chat-chip">Putaminal hemorrhage management</button>
+        <button class="chat-chip">NPH imaging features</button>
+        <button class="chat-chip">ICP management</button>
+      </div>
+    </aside>
+
     <aside class="toolbar">
       <div class="tool-section">
         <h3>DICOM Images</h3>
@@ -181,6 +202,7 @@
 
   <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://unpkg.com/dicom-parser@1.8.21/dist/dicomParser.min.js"></script>
+  <script src="js/knowledge-base.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
