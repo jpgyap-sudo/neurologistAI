@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 REM Usage:
 REM scripts\run_analysis.bat <input_dicom_dir> <output_dir>
 
-set SLICER_EXE=C:\Users\YOUR_NAME\AppData\Local\slicer.org\Slicer 5.8.0\Slicer.exe
+set SLICER_EXE=C:\ProgramData\slicer.org\3D Slicer 5.10.0\Slicer.exe
 
 if "%~1"=="" (
   echo Missing input DICOM directory.
