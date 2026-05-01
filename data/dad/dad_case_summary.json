@@ -1,0 +1,16 @@
+{
+  "patient_label": "Dad",
+  "primary_condition": "post-stroke recovery after deep/basal ganglia hemorrhage",
+  "consciousness_state": "MCS_or_unknown_current",
+  "key_questions": [
+    "hydrocephalus ex-vacuo vs shunt-responsive NPH",
+    "VP shunt expected benefit vs risk",
+    "MCS recovery trajectory",
+    "medication effects on arousal",
+    "rehabilitation intensity and measurable gains"
+  ],
+  "known_high_weight_facts": [
+    "LP x2 with approximately 40 mL removed and no observed benefit",
+    "concern for asymmetric ventricular enlargement near old deep hemispheric injury"
+  ]
+}

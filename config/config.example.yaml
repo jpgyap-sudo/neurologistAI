@@ -1,0 +1,16 @@
+slicer:
+  executable_path: "C:\\Users\\YOUR_NAME\\AppData\\Local\\slicer.org\\Slicer 5.8.0\\Slicer.exe"
+
+analysis:
+  load_first_valid_volume_only: false
+  preferred_sequences:
+    - FLAIR
+    - T2
+    - T1
+    - CT
+  export_previews: true
+  require_manual_callosal_angle_confirmation: true
+
+safety:
+  diagnostic_claims_allowed: false
+  clinician_review_required: true

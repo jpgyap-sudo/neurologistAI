@@ -1,0 +1,40 @@
+[
+  {
+    "date": "UNKNOWN",
+    "csf_removed_ml": 40,
+    "opening_pressure_cmH2O": null,
+    "closing_pressure_cmH2O": null,
+    "pre_lp_status": {
+      "consciousness": "MCS",
+      "visual_tracking": "baseline_or_unknown",
+      "swallow_latency_sec": null,
+      "motor_response": "baseline_or_unknown",
+      "gait": "not_testable"
+    },
+    "post_lp_assessments": [
+      {"time_after_lp": "2 hours", "change": "none_observed_or_unknown"},
+      {"time_after_lp": "24 hours", "change": "none_observed_or_unknown"},
+      {"time_after_lp": "48 hours", "change": "none_observed_or_unknown"}
+    ],
+    "overall_response": "negative"
+  },
+  {
+    "date": "UNKNOWN",
+    "csf_removed_ml": 40,
+    "opening_pressure_cmH2O": null,
+    "closing_pressure_cmH2O": null,
+    "pre_lp_status": {
+      "consciousness": "MCS",
+      "visual_tracking": "baseline_or_unknown",
+      "swallow_latency_sec": null,
+      "motor_response": "baseline_or_unknown",
+      "gait": "not_testable"
+    },
+    "post_lp_assessments": [
+      {"time_after_lp": "2 hours", "change": "none_observed_or_unknown"},
+      {"time_after_lp": "24 hours", "change": "none_observed_or_unknown"},
+      {"time_after_lp": "48 hours", "change": "none_observed_or_unknown"}
+    ],
+    "overall_response": "negative"
+  }
+]
