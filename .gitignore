@@ -1,0 +1,22 @@
+# Local medical data - do not commit PHI/DICOMs
+scans/**
+outputs/**
+*.dcm
+*.nii
+*.nii.gz
+*.nrrd
+*.mha
+*.mhd
+config.yaml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

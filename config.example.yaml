@@ -1,0 +1,10 @@
+# Copy this file to config.yaml and edit paths for your laptop.
+
+slicer_exe: "C:\\Users\\YOUR_NAME\\AppData\\Local\\slicer.org\\Slicer 5.8.0\\Slicer.exe"
+base_dir: "C:\\superroo-medical"
+default_patient_id: "dad"
+
+analysis:
+  export_png_previews: false
+  load_first_valid_volume_only: true
+  safety_mode: true

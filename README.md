@@ -1,71 +1,62 @@
-# CT Scan Analyzer
+# SuperRoo Medical
 
-A client-side, single-file HTML application for viewing DICOM CT scan images, adjusting window/level settings, taking measurements, drawing ROIs, and generating structured radiology reports. No server or installation required.
+Local medical-imaging and clinical decision-support scaffold for SuperRoo.
 
-## Features
+This repo lets SuperRoo call a local 3D Slicer installation to process DICOM MRI/CT studies, export technical metrics, and generate structured neurologist/radiologist-style reports for doctor review.
 
-- **DICOM Viewer**
-  - Load individual `.dcm` files or bulk-import via `.zip` archives (no file count limit).
-  - Browse slices with Previous / Next navigation.
-  - Apply medical window/level presets: Lung, Soft Tissue, Bone, Brain, Abdomen.
-  - Interactive window/level adjustment by dragging.
+> Safety boundary: this project is not a diagnostic medical device. It generates quantitative decision-support summaries and doctor-facing questions. Final interpretation and treatment decisions must remain with licensed clinicians.
 
-- **General File Attachments**
-  - Attach supporting files: PDF, JPG, PNG, BMP, GIF.
-  - Click any attached file to preview images in the viewer.
+## What this repo does now
 
-- **Image Tools**
-  - **Pan** and **Zoom** (mouse wheel + zoom tool).
-  - **Window/Level** drag adjustment.
-  - **Length measurement** with on-canvas labels in millimeters.
-  - **Rectangle and Ellipse ROIs** with pixel statistics (min, max, mean).
-  - **Annotations / text notes** on the image.
+- Runs 3D Slicer headless from command line.
+- Imports a DICOM folder.
+- Loads the first valid scalar volume.
+- Exports metadata to `metrics.json`.
+- Creates a basic markdown report.
+- Exposes an optional FastAPI endpoint for SuperRoo.
+- Includes clinical prompt templates for:
+  - radiology review
+  - neurology correlation
+  - hydrocephalus vs ex-vacuo reasoning
+  - medication/recovery review
 
-- **DICOM to Image Export**
-  - Save the current displayed slice (with windowing and annotations) as a PNG image.
+## Folder structure
 
-- **Report Generator**
-  - Fill in Patient ID, Study Date, Body Part, Clinical History, Findings, Impression, and Recommendations.
-  - Generate a printable report and save as PDF via the browser print dialog.
-
-- **Analysis Panel**
-  - View image dimensions, min/max pixel values, and mean intensity.
-  - ROI statistics update automatically when a region is drawn.
-  - Measurement list accumulates all length measurements.
-
-## How to Use
-
-1. Open `index.html` in any modern web browser (Chrome, Edge, Firefox recommended).
-2. Click **Attach DICOM / ZIP** to load DICOM files or ZIP archives containing DICOMs.
-3. Click **Attach PDF / Images** to add supporting documents or reference images.
-4. Select a file from the list to display it in the viewer.
-5. Use the **Tools** buttons to switch between Pan, Zoom, Window/Level, Measure, ROI, and Annotation modes.
-6. Adjust **Width (WW)** and **Level (WL)** sliders or use preset buttons.
-7. Click **Generate Image from DICOM** to export the current slice as PNG.
-8. Switch to the **Report** tab to enter findings and generate a printable report.
-
-## Browser Requirements
-
-- Modern browser with HTML5 Canvas, File API, and ES6 support.
-- Internet connection required on first load to fetch JSZip and dicom-parser CDN libraries.
-
-## Important Disclaimer
-
-This tool is for **educational and demonstration purposes only**. It does **not** provide medical diagnoses. Always consult a qualified radiologist or physician for interpretation of medical imaging.
-
-## File Structure
-
-```
-ctscan-analyzer/
-├── index.html        # Main application
-├── css/
-│   └── style.css     # UI styles
-├── js/
-│   └── app.js        # Viewer logic, DICOM parsing, tools, reports
-└── README.md         # This file
+```text
+superroo-medical/
+  scripts/                 # Slicer command-line scripts
+  service/                 # Optional local FastAPI wrapper
+  agents/prompts/          # Agent system prompts for SuperRoo
+  clinical/                # Clinical decision rules and knowledge scaffolds
+  reports/templates/       # Doctor-facing report templates
+  docs/                    # Setup and workflow guides
+  scans/dad/               # Local DICOM input folder placeholder
+  outputs/dad/             # Output folder placeholder
 ```
 
-## Libraries Used
+## Quick start
 
-- [JSZip](https://stuk.github.io/jszip/) – for ZIP archive extraction in the browser.
-- [dicom-parser](https://github.com/cornerstonejs/dicomParser) – for parsing DICOM files client-side.
+1. Install 3D Slicer on your laptop.
+2. Edit `config.example.yaml` and copy it to `config.yaml`.
+3. Put DICOM files under `scans/dad/<scan-date>/`.
+4. Run:
+
+```bat
+scripts\run_analysis.bat scans\dad\2026-05-01-mri outputs\dad\2026-05-01-mri
+```
+
+Expected outputs:
+
+```text
+outputs/dad/2026-05-01-mri/metrics.json
+outputs/dad/2026-05-01-mri/report.md
+outputs/dad/2026-05-01-mri/dicom_db/
+```
+
+## SuperRoo instruction
+
+Tell SuperRoo:
+
+```text
+Use the local SuperRoo Medical repo. When I provide a DICOM folder path, call the local Slicer pipeline, then read metrics.json and report.md. Do not diagnose. Generate a technical radiology-style summary, neurology correlation, trend comparison, and doctor-facing questions.
+```

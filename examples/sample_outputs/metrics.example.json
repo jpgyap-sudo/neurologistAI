@@ -1,0 +1,16 @@
+{
+  "status": "loaded_successfully",
+  "timestamp": "2026-05-01T00:00:00Z",
+  "input_dir": "scans/dad/2026-05-01-mri",
+  "output_dir": "outputs/dad/2026-05-01-mri",
+  "loaded_volume": {
+    "name": "Series 1",
+    "dimensions_voxels": {"x": 512, "y": 512, "z": 36},
+    "spacing_mm": {"x": 0.5, "y": 0.5, "z": 5.0},
+    "approx_full_volume_ml": 1179.65
+  },
+  "clinical_safety": {
+    "diagnosis": "not_generated",
+    "note": "Technical DICOM loading output only. Requires visual review and clinician interpretation."
+  }
+}
