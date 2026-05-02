@@ -190,7 +190,7 @@ if FastAPI is not None:
         CORSMiddleware,
         allow_origins=os.getenv(
             "ALLOWED_ORIGINS",
-            "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,https://neurologist-ai.vercel.app",
+            "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,https://neurologist-ai.vercel.app,https://ctscan-analyzer.vercel.app",
         ).split(","),
         allow_credentials=True,
         allow_methods=["*"],
@@ -226,13 +226,20 @@ class LocalSlicerHandler(BaseHTTPRequestHandler):
         self.send_header("content-type", "application/json")
         self.send_header("access-control-allow-origin", "*")
         self.send_header("access-control-allow-methods", "GET,POST,OPTIONS")
-        self.send_header("access-control-allow-headers", "content-type")
+        self.send_header("access-control-allow-headers", "*")
+        self.send_header("access-control-allow-private-network", "true")
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self):
-        self.send_json(200, {"status": "ok"})
+        self.send_response(200)
+        self.send_header("access-control-allow-origin", "*")
+        self.send_header("access-control-allow-methods", "GET,POST,OPTIONS")
+        self.send_header("access-control-allow-headers", "*")
+        self.send_header("access-control-allow-private-network", "true")
+        self.send_header("content-length", "0")
+        self.end_headers()
 
     def do_GET(self):
         if urlparse(self.path).path == "/health":
