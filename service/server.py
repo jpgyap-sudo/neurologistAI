@@ -5,6 +5,9 @@ import json
 import os
 import subprocess
 import uuid
+import tempfile
+import shutil
+import zipfile
 
 try:
     from dotenv import load_dotenv
@@ -13,12 +16,13 @@ except ModuleNotFoundError:
         return False
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel, Field
 except ModuleNotFoundError:
     FastAPI = None
     HTTPException = None
+    Request = None
     CORSMiddleware = None
     BaseModel = object
 
@@ -157,6 +161,29 @@ def run_legacy_analysis(input_dir: str, output_dir: str):
     }
 
 
+def extract_and_run(zip_bytes: bytes):
+    slicer_exe, slicer_script, _output_root = slicer_config()
+    if not slicer_exe.exists():
+        http_error(500, f"Slicer executable missing or invalid: {slicer_exe}")
+    if not slicer_script.exists():
+        http_error(500, f"Slicer script missing or invalid: {slicer_script}")
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="slicer_upload_"))
+    try:
+        zip_path = temp_dir / "upload.zip"
+        with open(zip_path, "wb") as f:
+            f.write(zip_bytes)
+
+        extract_dir = temp_dir / "dicom"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+
+        return run_slicer_analysis(str(extract_dir))
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 if FastAPI is not None:
     app = FastAPI(title="Local Slicer Service")
     app.add_middleware(
@@ -181,6 +208,13 @@ if FastAPI is not None:
     @app.post("/analyze-dicom")
     def analyze_dicom(req: LegacyAnalyzeRequest):
         return run_legacy_analysis(req.input_dir, req.output_dir)
+
+    @app.post("/upload-and-analyze")
+    async def upload_and_analyze(request: Request):
+        body = await request.body()
+        if not body:
+            http_error(400, "Empty request body")
+        return extract_and_run(body)
 else:
     app = None
 
@@ -208,9 +242,19 @@ class LocalSlicerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            path = urlparse(self.path).path
+            if path == "/upload-and-analyze":
+                length = int(self.headers.get("content-length", "0"))
+                body = self.rfile.read(length)
+                if not body:
+                    self.send_json(400, {"error": "bad_request", "detail": "Empty request body"})
+                    return
+                result = extract_and_run(body)
+                self.send_json(200, result)
+                return
+
             length = int(self.headers.get("content-length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            path = urlparse(self.path).path
             if path == "/analyze":
                 self.send_json(200, run_slicer_analysis(payload.get("dicom_dir", "")))
                 return
@@ -223,6 +267,9 @@ class LocalSlicerHandler(BaseHTTPRequestHandler):
         except subprocess.TimeoutExpired:
             self.send_json(504, {"error": "slicer_timeout", "detail": "Slicer analysis timed out after 15 minutes."})
         except Exception as err:
+            if HTTPException is not None and isinstance(err, HTTPException):
+                self.send_json(err.status_code, {"error": "http_exception", "detail": err.detail})
+                return
             self.send_json(500, {"error": "slicer_service_failed", "detail": str(err)})
 
 

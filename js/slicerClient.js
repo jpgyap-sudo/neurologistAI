@@ -23,5 +23,22 @@ export async function checkSlicerHealth({ slicerServiceUrl } = {}) {
   return response.json();
 }
 
+export async function uploadZipToSlicer({ zipBlob, slicerServiceUrl }) {
+  const baseUrl = slicerServiceUrl || window.SLICER_SERVICE_URL || "http://127.0.0.1:8787";
+  const response = await fetch(`${baseUrl}/upload-and-analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/zip" },
+    body: zipBlob
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.details || err.error || `Slicer upload HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
 window.analyzeDicomWithSlicer = analyzeDicomWithSlicer;
 window.checkSlicerHealth = checkSlicerHealth;
+window.uploadZipToSlicer = uploadZipToSlicer;

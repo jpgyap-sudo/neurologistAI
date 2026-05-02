@@ -24,6 +24,7 @@
     evansMeasurement: null,
     deshMeasurement: null,
     generalImageCache: {},   // { [objectURL]: HTMLImageElement }
+    lastUploadedZip: null,   // original File for auto Slicer upload
   };
 
   const appSkills = Array.isArray(window.AppSkills) ? window.AppSkills : [];
@@ -227,6 +228,7 @@
       }
     }
 
+    state.lastUploadedZip = file;
     if (state.dicomFiles.length === 0 && state.generalFiles.length === 0) {
       setDicomMessage(`No readable DICOM, image, or PDF files were found inside ${file.name}.`, true);
     }
@@ -1324,15 +1326,23 @@
   runSlicerAnalysisButton?.addEventListener('click', async () => {
     const slicerServiceUrl = getSlicerBaseUrl();
     const dicomDir = slicerDicomDirInput?.value.trim();
-    if (!dicomDir) {
-      setSlicerStatus('Enter a real local folder path first. Browser-attached files are viewable here, but Slicer needs a filesystem folder such as C:\\tmp\\ctscan-dicom-test.', 'error');
-      return;
-    }
 
     setSlicerStatus('Running local 3D Slicer analysis. This can take several minutes...');
     runSlicerAnalysisButton.disabled = true;
     try {
-      const payload = await analyzeLocalDicomWithSlicer({ dicomDir, slicerServiceUrl });
+      let payload;
+      if (dicomDir) {
+        payload = await analyzeLocalDicomWithSlicer({ dicomDir, slicerServiceUrl });
+      } else if (state.lastUploadedZip) {
+        if (typeof window.uploadZipToSlicer !== 'function') {
+          throw new Error('uploadZipToSlicer is not available. Make sure js/slicerClient.js is loaded.');
+        }
+        payload = await window.uploadZipToSlicer({ zipBlob: state.lastUploadedZip, slicerServiceUrl });
+      } else {
+        setSlicerStatus('Enter a real local folder path first, or load a ZIP archive. Browser-attached files are viewable here, but Slicer needs a filesystem folder or uploaded ZIP.', 'error');
+        runSlicerAnalysisButton.disabled = false;
+        return;
+      }
       state.slicerResult = payload;
       renderSlicerResult(payload);
       appendChat(`Local Slicer analysis returned:\n${summarizeSlicerMetrics()}`, 'ai');
