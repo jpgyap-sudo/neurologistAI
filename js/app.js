@@ -13,11 +13,14 @@
     tool: 'pan',
     isDragging: false,
     dragStart: { x: 0, y: 0 },
-    annotations: [],     // { type, points, text, color }
+    annotationsBySlice: {},  // { [sliceIndex]: annotation[] }
+    annotationsByGeneralFile: {}, // { [objectURL]: annotation[] }
+    annotations: [],         // current slice's annotations (reference into annotationsBySlice)
     tempAnnotation: null,
     imgMin: 0,
     imgMax: 0,
     imgMean: 0,
+    generalImageCache: {},   // { [objectURL]: HTMLImageElement }
   };
 
   const appSkills = Array.isArray(window.AppSkills) ? window.AppSkills : [];
@@ -65,7 +68,11 @@
   const setDicomMessage = (message, isError = false) => {
     const list = document.getElementById('dicomList');
     if (state.dicomFiles.length === 0) {
-      list.innerHTML = `<p class="placeholder ${isError ? 'error' : ''}">${message}</p>`;
+      list.innerHTML = '';
+      const placeholder = document.createElement('p');
+      placeholder.className = `placeholder ${isError ? 'error' : ''}`;
+      placeholder.textContent = message;
+      list.appendChild(placeholder);
     }
   };
 
@@ -79,7 +86,13 @@
     const ul = document.createElement('ul');
     state.dicomFiles.forEach((item, idx) => {
       const li = document.createElement('li');
-      li.innerHTML = `<span class="fname">${item.file.name}</span><span class="fsize">${formatBytes(item.file.size)}</span>`;
+      const name = document.createElement('span');
+      name.className = 'fname';
+      name.textContent = item.file.name;
+      const size = document.createElement('span');
+      size.className = 'fsize';
+      size.textContent = formatBytes(item.file.size);
+      li.append(name, size);
       li.style.cursor = 'pointer';
       li.style.color = idx === state.activeIndex && state.activeGeneralIndex === -1 ? '#60a5fa' : '#e5e7eb';
       li.addEventListener('click', () => {
@@ -104,7 +117,13 @@
     const ul = document.createElement('ul');
     state.generalFiles.forEach((item, idx) => {
       const li = document.createElement('li');
-      li.innerHTML = `<span class="fname">${item.file.name}</span><span class="fsize">${formatBytes(item.file.size)}</span>`;
+      const name = document.createElement('span');
+      name.className = 'fname';
+      name.textContent = item.file.name;
+      const size = document.createElement('span');
+      size.className = 'fsize';
+      size.textContent = formatBytes(item.file.size);
+      li.append(name, size);
       li.style.cursor = 'pointer';
       li.style.color = idx === state.activeGeneralIndex ? '#60a5fa' : '#e5e7eb';
       li.addEventListener('click', () => {
@@ -122,24 +141,29 @@
   const updateAttachedTab = () => {
     const dicomUl = document.getElementById('attachedDicomList');
     const generalUl = document.getElementById('attachedGeneralList');
-    dicomUl.innerHTML = state.dicomFiles.map((item, idx) =>
-      `<li class="${idx === state.activeIndex && state.activeGeneralIndex === -1 ? 'active' : ''}">${item.file.name}</li>`
-    ).join('');
-    generalUl.innerHTML = state.generalFiles.map((item, idx) =>
-      `<li class="${idx === state.activeGeneralIndex ? 'active' : ''}">${item.file.name}</li>`
-    ).join('');
-    // click handlers
-    Array.from(dicomUl.children).forEach((li, idx) => {
+    dicomUl.innerHTML = '';
+    generalUl.innerHTML = '';
+
+    state.dicomFiles.forEach((item, idx) => {
+      const li = document.createElement('li');
+      li.className = idx === state.activeIndex && state.activeGeneralIndex === -1 ? 'active' : '';
+      li.textContent = item.file.name;
       li.addEventListener('click', () => {
         state.activeIndex = idx; state.activeGeneralIndex = -1;
         renderDicomList(); renderGeneralList(); loadSlice();
       });
+      dicomUl.appendChild(li);
     });
-    Array.from(generalUl.children).forEach((li, idx) => {
+
+    state.generalFiles.forEach((item, idx) => {
+      const li = document.createElement('li');
+      li.className = idx === state.activeGeneralIndex ? 'active' : '';
+      li.textContent = item.file.name;
       li.addEventListener('click', () => {
         state.activeGeneralIndex = idx;
         renderGeneralList(); renderDicomList(); loadGeneralFile();
       });
+      generalUl.appendChild(li);
     });
   };
 
@@ -247,9 +271,14 @@
 
   document.getElementById('generalInput').addEventListener('change', async (e) => {
     const files = Array.from(e.target.files);
+    const firstNewIdx = state.generalFiles.length;
     for (const file of files) {
       const objectURL = URL.createObjectURL(file);
       state.generalFiles.push({ file, objectURL, type: file.type });
+    }
+    if (files.length > 0 && state.activeGeneralIndex === -1) {
+      state.activeGeneralIndex = firstNewIdx;
+      loadGeneralFile();
     }
     renderGeneralList();
     updateAttachedTab();
@@ -385,7 +414,19 @@
     canvas.width = width;
     canvas.height = height;
     const imgData = computeWindowedImageData(pixelData, width, height, state.ww, state.wl);
-    ctx.putImageData(imgData, 0, 0);
+    // putImageData ignores canvas transforms, so use an offscreen canvas + drawImage
+    const offscreen = document.createElement('canvas');
+    offscreen.width = width;
+    offscreen.height = height;
+    offscreen.getContext('2d').putImageData(imgData, 0, 0);
+    const cx = width / 2;
+    const cy = height / 2;
+    ctx.save();
+    ctx.translate(cx + state.panX, cy + state.panY);
+    ctx.scale(state.scale, state.scale);
+    ctx.translate(-cx, -cy);
+    ctx.drawImage(offscreen, 0, 0);
+    ctx.restore();
     drawAnnotations();
     updateInfo();
   };
@@ -397,9 +438,26 @@
     if (state.dicomFiles.length > 1) viewerNav.style.display = 'flex';
     document.getElementById('sliceInfo').textContent = `${state.activeIndex + 1} / ${state.dicomFiles.length}`;
     state.scale = 1; state.panX = 0; state.panY = 0;
-    state.annotations = [];
+    if (!state.annotationsBySlice[state.activeIndex]) state.annotationsBySlice[state.activeIndex] = [];
+    state.annotations = state.annotationsBySlice[state.activeIndex];
     renderSlice();
     updateAttachedTab();
+  };
+
+  const drawGeneralImage = (img) => {
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    ctx.save();
+    ctx.translate(cx + state.panX, cy + state.panY);
+    ctx.scale(state.scale, state.scale);
+    ctx.translate(-cx, -cy);
+    ctx.drawImage(img, 0, 0);
+    ctx.restore();
+    drawAnnotations();
+    state.imgMin = 0; state.imgMax = 255; state.imgMean = 128;
+    updateInfo();
   };
 
   const loadGeneralFile = () => {
@@ -408,19 +466,23 @@
     emptyState.style.display = 'none';
     canvas.style.display = 'block';
     viewerNav.style.display = 'none';
+    if (!state.annotationsByGeneralFile[item.objectURL]) {
+      state.annotationsByGeneralFile[item.objectURL] = [];
+    }
+    state.annotations = state.annotationsByGeneralFile[item.objectURL];
     if (item.type.startsWith('image/')) {
-      const img = new Image();
-      img.onload = () => {
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        ctx.drawImage(img, 0, 0);
-        drawAnnotations();
-        state.imgMin = 0; state.imgMax = 255; state.imgMean = 128;
-        updateInfo();
-      };
-      img.src = item.objectURL;
+      const cached = state.generalImageCache[item.objectURL];
+      if (cached) {
+        drawGeneralImage(cached);
+      } else {
+        const img = new Image();
+        img.onload = () => {
+          state.generalImageCache[item.objectURL] = img;
+          drawGeneralImage(img);
+        };
+        img.src = item.objectURL;
+      }
     } else {
-      // PDF or other: show placeholder on canvas
       canvas.width = 512; canvas.height = 512;
       ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, 512, 512);
@@ -548,7 +610,129 @@
 
     if (!response.ok) return null;
     const payload = await response.json();
-    return payload.answer || null;
+    return payload || null;
+  };
+
+  const AGENT_META = {
+    radiology: { icon: '🩻', label: 'Radiology Agent' },
+    neurology: { icon: '🧠', label: 'Neurology Agent' },
+    medication: { icon: '💊', label: 'Medication Agent' },
+    rehab: { icon: '🏃', label: 'Rehab Agent' },
+    research: { icon: '📚', label: 'Research Agent' }
+  };
+
+  const appendAiResponse = (data) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'chat-bubble ai';
+
+    // Human review warning
+    if (data.requiresHumanReview === true) {
+      const warning = document.createElement('div');
+      warning.className = 'human-review-warning';
+      warning.textContent = '⚠️ This response has low confidence and requires human clinician review before any action is taken.';
+      wrapper.appendChild(warning);
+    }
+
+    // Answer text
+    const body = document.createElement('div');
+    body.innerHTML = formatChatText(data.answer || '');
+    wrapper.appendChild(body);
+
+    // Meta row: agent + confidence
+    const meta = document.createElement('div');
+    meta.className = 'chat-meta';
+
+    if (data.agentUsed && AGENT_META[data.agentUsed]) {
+      const agent = AGENT_META[data.agentUsed];
+      const badge = document.createElement('span');
+      badge.className = `agent-badge agent-${data.agentUsed}`;
+      badge.textContent = `${agent.icon} ${agent.label}`;
+      meta.appendChild(badge);
+    }
+
+    if (data.confidence) {
+      const confBadge = document.createElement('span');
+      confBadge.className = `confidence-${data.confidence}`;
+      const confLabels = {
+        high: 'High confidence',
+        moderate: 'Moderate confidence — review recommended',
+        low: 'Low confidence — human review required'
+      };
+      confBadge.textContent = confLabels[data.confidence] || data.confidence;
+      meta.appendChild(confBadge);
+    }
+
+    if (meta.children.length > 0) {
+      wrapper.appendChild(meta);
+    }
+
+    // Web sources with abstracts
+    const webSources = Array.isArray(data.web_sources) ? data.web_sources : [];
+    if (webSources.length > 0) {
+      const sourcesBox = document.createElement('div');
+      sourcesBox.className = 'sources-section';
+
+      const sourcesHeader = document.createElement('div');
+      sourcesHeader.className = 'sources-header';
+      sourcesHeader.textContent = `Sources (${webSources.length})`;
+      sourcesBox.appendChild(sourcesHeader);
+
+      webSources.forEach((source) => {
+        const item = document.createElement('div');
+        item.className = 'source-item';
+
+        const titleRow = document.createElement('div');
+        titleRow.className = 'source-title-row';
+        const link = document.createElement('a');
+        link.className = 'source-title';
+        link.href = source.url || '#';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = source.title || 'Untitled source';
+        titleRow.appendChild(link);
+        item.appendChild(titleRow);
+
+        const metaRow = document.createElement('div');
+        metaRow.className = 'source-meta';
+        const metaParts = [
+          source.journal || source.sourceName,
+          source.published || source.pubDate
+        ].filter(Boolean);
+        if (metaParts.length > 0) {
+          metaRow.textContent = metaParts.join(' · ');
+          item.appendChild(metaRow);
+        }
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'abstract-toggle';
+        toggle.textContent = 'Abstract';
+        item.appendChild(toggle);
+
+        const abstractBox = document.createElement('div');
+        abstractBox.className = 'abstract-content';
+        abstractBox.style.display = 'none';
+        if (source.abstract) {
+          abstractBox.textContent = source.abstract;
+        } else {
+          abstractBox.innerHTML = '<span class="abstract-unavailable">Abstract unavailable</span>';
+        }
+        item.appendChild(abstractBox);
+
+        toggle.addEventListener('click', () => {
+          const isCollapsed = abstractBox.style.display === 'none';
+          abstractBox.style.display = isCollapsed ? 'block' : 'none';
+          toggle.classList.toggle('expanded', isCollapsed);
+        });
+
+        sourcesBox.appendChild(item);
+      });
+
+      wrapper.appendChild(sourcesBox);
+    }
+
+    chatMessages.appendChild(wrapper);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
   };
 
   // ===== WINDOW / LEVEL =====
@@ -585,7 +769,7 @@
   });
 
   document.getElementById('clearAnnotations').addEventListener('click', () => {
-    state.annotations = [];
+    state.annotations.length = 0;
     if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
   });
 
@@ -630,7 +814,7 @@
       state.dragStart = { x: e.clientX, y: e.clientY };
       if (state.activeGeneralIndex === -1) renderSlice(); else loadGeneralFile();
     } else if (state.tool === 'window') {
-      state.ww = Math.max(1, state.ww + dx * 2);
+      state.ww = Math.max(1, Math.min(4000, state.ww + dx * 2));
       state.wl = Math.max(-1000, Math.min(1000, state.wl + dy * 2));
       wwSlider.value = state.ww;
       wlSlider.value = state.wl;
@@ -796,8 +980,19 @@
 
   const escapeHtml = (str) => {
     if (!str) return '';
-    return str.replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>');
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   };
+
+  const formatChatText = (text) => (
+    escapeHtml(text)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>')
+  );
 
   // ===== DROP ZONE =====
   viewport.addEventListener('dragover', (e) => { e.preventDefault(); viewport.style.border = '2px dashed #2563eb'; });
@@ -820,6 +1015,8 @@
     }
     if (state.dicomFiles.length > 0 && state.activeGeneralIndex === -1) {
       state.activeIndex = 0; loadSlice();
+    } else if (state.generalFiles.length > 0 && state.activeGeneralIndex === -1) {
+      state.activeGeneralIndex = 0; loadGeneralFile();
     }
     renderDicomList(); renderGeneralList(); updateAttachedTab();
   });
@@ -832,7 +1029,7 @@
   const appendChat = (text, sender) => {
     const bubble = document.createElement('div');
     bubble.className = `chat-bubble ${sender}`;
-    bubble.innerHTML = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
+    bubble.innerHTML = formatChatText(text);
     chatMessages.appendChild(bubble);
     chatMessages.scrollTop = chatMessages.scrollHeight;
   };
@@ -860,15 +1057,19 @@
     // Simulate realistic latency
     await new Promise(r => setTimeout(r, 600 + Math.random() * 800));
     hideTyping();
-    let reply = null;
+    let payload = null;
     try {
-      reply = await tryServerAssistant(text);
+      payload = await tryServerAssistant(text);
     } catch (e) {
       console.warn('Server assistant unavailable, using local fallback.', e);
     }
-    const scanReply = reply ? null : generateScanAwareResponse(text);
-    const skillReply = reply || scanReply ? null : generateAppSkillResponse(text);
-    reply = reply || scanReply || skillReply || (typeof generateResponse === 'function' ? generateResponse(text) : 'I am not available right now.');
+    if (payload && payload.answer) {
+      appendAiResponse(payload);
+      return;
+    }
+    const scanReply = generateScanAwareResponse(text);
+    const skillReply = scanReply ? null : generateAppSkillResponse(text);
+    const reply = scanReply || skillReply || (typeof generateResponse === 'function' ? generateResponse(text) : 'I am not available right now.');
     appendChat(reply, 'ai');
   };
 

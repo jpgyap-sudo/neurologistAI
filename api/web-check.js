@@ -1,5 +1,5 @@
 const { webCounterCheck } = require('./lib/web-check');
-const { handleOptions, readJsonBody, setCors } = require('./lib/request');
+const { handleOptions, parseLimit, readJsonBody, setCors } = require('./lib/request');
 
 module.exports = async function handler(req, res) {
   if (handleOptions(req, res)) return;
@@ -18,7 +18,7 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const result = await webCounterCheck(query, Number(body?.limit || 5));
+    const result = await webCounterCheck(query, parseLimit(body?.limit, 5, 10));
     res.status(200).json(result);
   } catch (error) {
     res.status(500).json({

@@ -52,7 +52,11 @@ function tokenize(text) {
   );
 }
 
+let _cachedChunks = null;
+
 function loadKnowledgeChunks() {
+  if (_cachedChunks) return _cachedChunks;
+
   const files = SOURCE_DIRS.flatMap(dir => walkFiles(path.join(ROOT, dir)));
   const chunks = [];
 
@@ -72,6 +76,7 @@ function loadKnowledgeChunks() {
     });
   }
 
+  _cachedChunks = chunks;
   return chunks;
 }
 

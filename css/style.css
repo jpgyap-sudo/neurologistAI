@@ -453,3 +453,172 @@ label { font-size: 12px; color: #9ca3af; }
   .report-content { position: absolute; inset: 0; }
   .close-btn, .report-content .btn { display: none; }
 }
+
+/* ===== CONFIDENCE LEGEND ===== */
+.confidence-legend {
+  padding: 8px 12px 4px;
+  background: #14171c;
+  border-bottom: 1px solid #23272e;
+  font-size: 11px;
+  color: #9ca3af;
+}
+.confidence-legend p {
+  margin: 0 0 4px;
+}
+.legend-dots {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.legend-dot {
+  font-size: 16px;
+  line-height: 1;
+  cursor: default;
+}
+.legend-dot.high { color: #34d399; }
+.legend-dot.moderate { color: #fbbf24; }
+.legend-dot.low { color: #f87171; }
+
+/* ===== CHAT META BADGES ===== */
+.chat-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2f38;
+}
+
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #e5e7eb;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: #1f232a;
+}
+.agent-radiology { background: #1e293b; border-color: #334155; }
+.agent-neurology { background: #1e1b4b; border-color: #312e81; }
+.agent-medication { background: #14532d; border-color: #166534; }
+.agent-rehab { background: #431407; border-color: #7c2d12; }
+.agent-research { background: #312e81; border-color: #4338ca; }
+
+.confidence-high,
+.confidence-moderate,
+.confidence-low {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.confidence-high {
+  background: #064e3b;
+  color: #34d399;
+  border-color: #065f46;
+}
+.confidence-moderate {
+  background: #451a03;
+  color: #fbbf24;
+  border-color: #78350f;
+}
+.confidence-low {
+  background: #450a0a;
+  color: #f87171;
+  border-color: #7f1d1d;
+}
+
+.human-review-warning {
+  background: #450a0a;
+  color: #fecaca;
+  border: 1px solid #7f1d1d;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+
+/* ===== SOURCES SECTION ===== */
+.sources-section {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2f38;
+}
+.sources-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 6px;
+}
+.source-item {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #0f1115;
+  border: 1px solid #23272e;
+  margin-bottom: 6px;
+}
+.source-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.source-title {
+  font-size: 12px;
+  color: #60a5fa;
+  text-decoration: none;
+  word-break: break-word;
+}
+.source-title:hover { text-decoration: underline; }
+.source-meta {
+  font-size: 11px;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+.abstract-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  background: #1f232a;
+  color: #94a3b8;
+  border: 1px solid #2a2f38;
+}
+.abstract-toggle:hover {
+  background: #1e293b;
+  color: #e5e7eb;
+}
+.abstract-toggle::before {
+  content: '▸';
+  font-size: 10px;
+}
+.abstract-toggle.expanded::before {
+  content: '▾';
+}
+.abstract-content {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #1f232a;
+  border: 1px solid #2a2f38;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #cbd5e1;
+}
+.abstract-unavailable {
+  color: #6b7280;
+  font-style: italic;
+}

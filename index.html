@@ -22,6 +22,14 @@
         <h2>NeuroAI Assistant</h2>
         <p class="chat-subtitle">Neurologist & Neurosurgeon AI</p>
       </div>
+      <div class="confidence-legend" id="confidenceLegend">
+        <p>Each response shows a confidence level based on evidence match.</p>
+        <div class="legend-dots">
+          <span class="legend-dot high" title="High confidence">●</span>
+          <span class="legend-dot moderate" title="Moderate confidence — review recommended">●</span>
+          <span class="legend-dot low" title="Low confidence — human review required">●</span>
+        </div>
+      </div>
       <div class="chat-messages" id="chatMessages"></div>
       <div class="chat-input-area">
         <input type="text" id="chatInput" placeholder="Ask about hydrocephalus, hemorrhage, imaging..." autocomplete="off">

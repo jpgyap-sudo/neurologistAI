@@ -1,5 +1,5 @@
 const { knowledgeStats, searchKnowledge } = require('./lib/knowledge');
-const { handleOptions, setCors } = require('./lib/request');
+const { handleOptions, parseLimit, setCors } = require('./lib/request');
 
 module.exports = async function handler(req, res) {
   if (handleOptions(req, res)) return;
@@ -15,7 +15,7 @@ module.exports = async function handler(req, res) {
   if (query) {
     res.status(200).json({
       query,
-      matches: searchKnowledge(query, Number(req.query.limit || 8))
+      matches: searchKnowledge(query, parseLimit(req.query.limit, 8, 20))
     });
     return;
   }

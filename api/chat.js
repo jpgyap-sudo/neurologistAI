@@ -1,6 +1,9 @@
+const fs = require('fs');
+const path = require('path');
 const { searchKnowledge } = require('./lib/knowledge');
 const { webCounterCheck } = require('./lib/web-check');
 const { handleOptions, readJsonBody, setCors } = require('./lib/request');
+const { validateAnswer } = require('./lib/validate');
 
 function excerpt(text, max = 700) {
   const compact = String(text || '').replace(/\s+/g, ' ').trim();
@@ -9,6 +12,81 @@ function excerpt(text, max = 700) {
 
 function wantsWebCheck(message) {
   return /(web|internet|pubmed|source|citation|evidence|guideline|counter.?check|latest|research|paper|study|diagnos|finding|impression|hydrocephalus|nph|ex vacuo|hemorrhage|stroke|shunt|callosal|desh)/i.test(message);
+}
+
+// ===== AGENT ROUTER =====
+const AGENT_KEYWORDS = {
+  radiology: ['scan', 'ct', 'mri', 'ventricle', 'hydrocephalus', 'desh', 'imaging', 'report', 'x-ray', 'ultrasound', 'pet', 'angiography', 'radiograph', 'tomography', 'contrast', 'effacement', 'sulci', 'fissure', 'evans index', 'callosal angle', 'temporal horn', 'edema', 'flair', 't1', 't2', 'dwu', 'dwi', 'slice', 'dicom', 'attenuation', 'hyperdense', 'hypodense', 'mass effect', 'midline shift'],
+  neurology: ['neuro', 'consciousness', 'mcs', 'crs-r', 'seizure', 'stroke', 'icp', 'gcs', 'coma', 'vegetative', 'minimally conscious', 'alertness', 'arousal', 'cognition', 'dementia', 'parkinson', 'als', 'myasthenia', 'meningitis', 'encephalitis', 'subarachnoid', 'subdural', 'epidural', 'hematoma', 'aneurysm', 'vasospasm', 'cerebral perfusion', 'herniation', 'brain death', 'neuro exam', 'pupil', 'reflex', 'tone', 'clonus', 'babinski', 'nystagmus', 'aphasia', 'apraxia', 'ataxia', 'neuropathy', 'myelopathy', 'synkinesis'],
+  medication: ['drug', 'med', 'amantadine', 'baclofen', 'interaction', 'prescription', 'pharmacy', 'pharmacology', 'dose', 'dosage', 'taper', 'withdrawal', 'side effect', 'adverse', 'contraindication', 'sedative', 'hypnotic', 'antipsychotic', 'anticholinergic', 'antiepileptic', 'antihypertensive', 'neurostimulant', 'methylphenidate', 'modafinil', 'tizanidine', 'antibiotic', 'vancomycin', 'phenytoin', 'levetiracetam', 'mannitol', 'hypertonic', 'aspirin', 'clopidogrel', 'warfarin', 'heparin', ' doac ', 'anticoagulant', 'thrombolytic', 'rtpa', 'alteplase'],
+  rehab: ['therapy', 'rehab', 'pt', 'ot', 'speech', 'swallow', 'mobility', 'physical therapy', 'occupational therapy', 'physiotherapy', 'speech therapy', 'slt', 'splint', 'brace', 'walker', 'wheelchair', 'gait', 'balance', 'transfer', 'bowel', 'bladder', 'spasticity', 'contracture', 'pressure sore', 'bedsore', 'decubitus', 'learned non-use', 'constraint induced', 'cims', 'bobath', 'ndt', 'functional electrical stimulation', 'fes', 'botulinum', 'botox', 'tone', 'rom', 'prom', 'arom', 'mrc', 'fac', 'fm ', 'fugl-meyer', 'barthel', 'mrs', 'rankin'],
+  research: ['study', 'evidence', 'paper', 'pubmed', 'trial', 'guideline', 'systematic review', 'meta-analysis', 'cohort', 'case series', 'case report', 'randomized', 'rct', 'clinical trial', 'phase ', 'protocol', 'inclusion', 'exclusion', 'endpoint', 'outcome', 'biomarker', 'efficacy', 'effectiveness', 'recommendation', 'consensus', 'society', 'aans', 'cns', 'aan', 'nice', 'sign', 'asa', 'esh', 'ich e9', 'ich e6', 'gcp', 'prisma', 'cochrane', 'medline', 'scopus', 'embase', 'cinahl', 'literature', 'bibliography', 'citation', 'reference']
+};
+
+function classifyAgent(message) {
+  const lower = message.toLowerCase();
+  let bestAgent = 'neurology';
+  let bestScore = 0;
+
+  for (const [agent, keywords] of Object.entries(AGENT_KEYWORDS)) {
+    let score = 0;
+    for (const kw of keywords) {
+      if (lower.includes(kw.toLowerCase())) {
+        score += 1;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestAgent = agent;
+    }
+  }
+
+  return { agent: bestAgent, overlapScore: bestScore };
+}
+
+const AGENT_FILE_MAP = {
+  radiology: 'radiology_agent.md',
+  neurology: 'neurology_agent.md',
+  medication: 'medication_review_agent.md',
+  rehab: 'rehab_agent.md',
+  research: 'research_librarian_agent.md'
+};
+
+function loadAgentPrompt(agent) {
+  const filename = AGENT_FILE_MAP[agent];
+  if (!filename) return '';
+  const filePath = path.join(process.cwd(), 'agents/prompts', filename);
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (e) {
+    console.warn(`Failed to load agent prompt for ${agent}:`, e.message);
+    return '';
+  }
+}
+
+function buildSystemPrompt(agent) {
+  const generic = [
+    'You are the NeuroAI assistant inside a clinical decision-support imaging app.',
+    'Do not diagnose, replace a radiologist, or issue treatment directives.',
+    'Use cautious terms: supports, argues against, indeterminate, requires clinician confirmation.',
+    'Separate loaded scan facts, local app knowledge, web counter-check evidence, uncertainty, and doctor-facing next steps.',
+    'If asked to diagnose the image, explain that validated clinical diagnosis requires licensed clinician interpretation and that the app can only provide decision support.'
+  ].join('\n');
+
+  const agentSpecific = loadAgentPrompt(agent);
+  if (!agentSpecific) return generic;
+  return `${generic}\n\n${agentSpecific}`;
+}
+
+function computeConfidence({ agent, overlapScore, localMatches, webResult }) {
+  const hasLocal = Array.isArray(localMatches) && localMatches.length > 0;
+  const hasWeb = webResult && Array.isArray(webResult.sources) && webResult.sources.length > 0;
+  const isSpecialist = agent !== 'neurology';
+  const highOverlap = overlapScore >= 2;
+
+  if (hasLocal && hasWeb && isSpecialist && highOverlap) return 'high';
+  if (hasLocal || hasWeb || isSpecialist) return 'moderate';
+  return 'low';
 }
 
 function buildFallbackAnswer({ message, scanContext, localMatches, webResult }) {
@@ -47,45 +125,51 @@ function buildModelInput({ message, scanContext, reportFields, localMatches, web
   ].join('\n\n---\n\n');
 }
 
-async function callOpenAI({ message, scanContext, reportFields, localMatches, webResult }) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
+function resolveAIProvider() {
+  if (process.env.KIMI_API_KEY) {
+    return {
+      apiKey: process.env.KIMI_API_KEY,
+      baseUrl: 'https://api.moonshot.cn/v1',
+      model: process.env.AI_MODEL || 'moonshot-v1-32k',
+      label: process.env.AI_MODEL || 'moonshot-v1-32k'
+    };
+  }
+  if (process.env.OPENAI_API_KEY) {
+    return {
+      apiKey: process.env.OPENAI_API_KEY,
+      baseUrl: 'https://api.openai.com/v1',
+      model: process.env.AI_MODEL || 'gpt-4.1-mini',
+      label: process.env.AI_MODEL || 'gpt-4.1-mini'
+    };
+  }
+  return null;
+}
 
-  const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
-  const response = await fetch('https://api.openai.com/v1/responses', {
+async function callAI({ message, scanContext, reportFields, localMatches, webResult, agent }) {
+  const provider = resolveAIProvider();
+  if (!provider) return null;
+
+  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${apiKey}`,
+      authorization: `Bearer ${provider.apiKey}`,
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model,
-      store: false,
-      instructions: [
-        'You are the NeuroAI assistant inside a clinical decision-support imaging app.',
-        'Do not diagnose, replace a radiologist, or issue treatment directives.',
-        'Use cautious terms: supports, argues against, indeterminate, requires clinician confirmation.',
-        'Separate loaded scan facts, local app knowledge, web counter-check evidence, uncertainty, and doctor-facing next steps.',
-        'If asked to diagnose the image, explain that validated clinical diagnosis requires licensed clinician interpretation and that the app can only provide decision support.'
-      ].join('\n'),
-      input: buildModelInput({ message, scanContext, reportFields, localMatches, webResult })
+      model: provider.model,
+      messages: [
+        { role: 'system', content: buildSystemPrompt(agent) },
+        { role: 'user', content: buildModelInput({ message, scanContext, reportFields, localMatches, webResult }) }
+      ]
     })
   });
 
   if (!response.ok) {
-    throw new Error(`OpenAI request failed: ${response.status} ${await response.text()}`);
+    throw new Error(`AI request failed (${provider.label}): ${response.status} ${await response.text()}`);
   }
 
   const data = await response.json();
-  if (data.output_text) return data.output_text;
-
-  const textParts = [];
-  for (const item of data.output || []) {
-    for (const content of item.content || []) {
-      if (content.type === 'output_text' && content.text) textParts.push(content.text);
-    }
-  }
-  return textParts.join('\n').trim() || null;
+  return data.choices?.[0]?.message?.content?.trim() || null;
 }
 
 module.exports = async function handler(req, res) {
@@ -107,13 +191,19 @@ module.exports = async function handler(req, res) {
 
     const scanContext = String(body?.scanContext || '').trim();
     const reportFields = body?.reportFields || null;
+
+    const { agent, overlapScore } = classifyAgent(message);
     const localMatches = searchKnowledge(`${message}\n${scanContext}`, 8);
     const shouldWebCheck = body?.counterCheck !== false && wantsWebCheck(message);
     const webResult = shouldWebCheck ? await webCounterCheck(message, 5) : null;
 
+    let finalConfidence = computeConfidence({ agent, overlapScore, localMatches, webResult });
+    let finalRequiresHumanReview = finalConfidence === 'low';
+
+    const provider = resolveAIProvider();
     let answer = null;
     try {
-      answer = await callOpenAI({ message, scanContext, reportFields, localMatches, webResult });
+      answer = await callAI({ message, scanContext, reportFields, localMatches, webResult, agent });
     } catch (error) {
       answer = `${buildFallbackAnswer({ message, scanContext, localMatches, webResult })}\n\nAI model note: ${error.message}`;
     }
@@ -122,15 +212,50 @@ module.exports = async function handler(req, res) {
       answer = buildFallbackAnswer({ message, scanContext, localMatches, webResult });
     }
 
+    let validation = null;
+    const gotRealAnswer = answer && !answer.includes('AI model note:');
+    if (gotRealAnswer && provider) {
+      try {
+        validation = await validateAnswer({
+          answer,
+          sources: {
+            local: localMatches,
+            web: webResult?.sources || []
+          },
+          query: message,
+          scanContext,
+          agent,
+          reportFields
+        });
+      } catch (validationError) {
+        validation = {
+          error: validationError.message,
+          requiresHumanReview: true
+        };
+      }
+    }
+
+    if (validation && !validation.error) {
+      const strictness = { high: 3, moderate: 2, low: 1 };
+      if (strictness[validation.suggested_confidence] < strictness[finalConfidence]) {
+        finalConfidence = validation.suggested_confidence;
+      }
+      finalRequiresHumanReview = finalRequiresHumanReview || validation.requiresHumanReview;
+    }
+
     res.status(200).json({
       answer,
+      confidence: finalConfidence,
+      requiresHumanReview: finalRequiresHumanReview,
+      agentUsed: agent,
       local_sources: localMatches.map(match => ({
         path: match.path,
         chunk_index: match.chunk_index,
         score: match.score
       })),
       web_sources: webResult?.sources || [],
-      model_used: process.env.OPENAI_API_KEY ? (process.env.OPENAI_MODEL || 'gpt-4.1-mini') : 'local-fallback'
+      model_used: provider ? provider.label : 'local-fallback',
+      validation
     });
   } catch (error) {
     res.status(500).json({
