@@ -1,0 +1,65 @@
+window.AppSkills = [
+  {
+    name: 'Callosal Angle Reconstruction',
+    keywords: ['callosal angle', 'ca measurement', 'ac-pc', 'ac pc', 'posterior commissure'],
+    summary: 'Guides manual callosal angle measurement on a true coronal plane perpendicular to the AC-PC line at the posterior commissure level.',
+    limits: 'Requires correct plane, correct slice level, visible lateral ventricles, and clinician confirmation. Asymmetry lowers reliability.',
+    output: 'Callosal angle in degrees plus confidence level and limitations.'
+  },
+  {
+    name: 'DESH / NPH Imaging Checklist',
+    keywords: ['desh', 'nph', 'normal pressure hydrocephalus', 'tight convexity', 'sylvian'],
+    summary: 'Organizes imaging signs that support or argue against NPH morphology, including tight high-convexity sulci and enlarged Sylvian fissures.',
+    limits: 'The browser viewer does not automatically segment sulci or ventricles.',
+    output: 'Structured evidence list for clinician review.'
+  },
+  {
+    name: 'Hydrocephalus Ex Vacuo Rules',
+    keywords: ['ex vacuo', 'atrophy', 'ventriculomegaly', 'hydrocephalus'],
+    summary: 'Compares ventriculomegaly from tissue loss/atrophy against active communicating or NPH-like hydrocephalus.',
+    limits: 'Needs radiology correlation and serial imaging; one sign alone is not enough.',
+    output: 'Pattern support: ex vacuo, NPH-like, mixed, or indeterminate.'
+  },
+  {
+    name: 'Lumbar Puncture Response',
+    keywords: ['lumbar puncture', 'lp', 'tap test', '40 ml', 'csf drainage'],
+    summary: 'Weights objective response after large-volume LP or drainage when considering shunt-responsive NPH.',
+    limits: 'In MCS, gait/cognition endpoints may be unavailable, so objective arousal and CRS-R markers matter more.',
+    output: 'LP response interpretation and limitations.'
+  },
+  {
+    name: 'VP Shunt Decision Matrix',
+    keywords: ['shunt', 'vp shunt', 'programmable valve', 'overdrainage', 'subdural'],
+    summary: 'Combines imaging evidence, LP response, risks, and uncertainty into shunt-support categories.',
+    limits: 'Decision support only; does not recommend surgery as a directive.',
+    output: 'Favors shunt-responsive hydrocephalus, mixed/uncertain, favors ex vacuo, or unsafe to conclude.'
+  },
+  {
+    name: 'Hydrocephalus Red Flags',
+    keywords: ['red flags', 'urgent', 'papilledema', 'transependymal', 'acute hydrocephalus'],
+    summary: 'Flags findings that should prompt urgent clinician review, especially signs of active pressure or deterioration.',
+    limits: 'Must be interpreted by qualified clinicians.',
+    output: 'Doctor-facing escalation questions.'
+  },
+  {
+    name: 'MCS / Rehab Tracking',
+    keywords: ['mcs', 'minimally conscious', 'rehab', 'crs-r', 'arousal', 'command following'],
+    summary: 'Tracks consciousness and rehab markers such as arousal duration, fixation, command following, motor response, swallowing, and CRS-R style observations.',
+    limits: 'Requires repeated objective bedside observations.',
+    output: 'Longitudinal recovery trend notes.'
+  },
+  {
+    name: 'Medication Neurorecovery Review',
+    keywords: ['medication', 'sedation', 'amantadine', 'baclofen', 'benzodiazepine', 'neurorecovery'],
+    summary: 'Reviews medications that may support or interfere with arousal, cognition, tone, sleep, seizure control, and recovery tracking.',
+    limits: 'Medication changes require physician oversight.',
+    output: 'Medication questions and neurorecovery risk notes.'
+  },
+  {
+    name: 'Report Templates',
+    keywords: ['report', 'template', 'findings', 'impression', 'doctor questions'],
+    summary: 'Provides structured imaging, LP response, shunt decision, radiology, and neurology report sections.',
+    limits: 'Templates organize observations; they do not replace radiology interpretation.',
+    output: 'Doctor-facing report language.'
+  }
+];

@@ -1,0 +1,14 @@
+{
+  "name": "neurologistai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vercel-ready neuroimaging decision-support app with local Slicer integration.",
+  "scripts": {
+    "dev": "vercel dev",
+    "start": "vercel dev",
+    "check": "node --check js/app.js && node --check js/app-skills.js && node --check api/chat.js && node --check api/knowledge.js && node --check api/web-check.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

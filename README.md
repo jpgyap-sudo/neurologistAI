@@ -14,6 +14,11 @@ This repo lets SuperRoo call a local 3D Slicer installation to process DICOM MRI
 - Exports metadata to `metrics.json`.
 - Creates a basic markdown report.
 - Exposes an optional FastAPI endpoint for SuperRoo.
+- Includes Vercel-ready assistant APIs for:
+  - local repo knowledge search across clinical/resources/skills/docs files
+  - PubMed counter-checking
+  - scan-context-aware assistant responses
+  - optional OpenAI model reasoning via `OPENAI_API_KEY`
 - Includes clinical prompt templates for:
   - radiology review
   - neurology correlation
@@ -29,6 +34,8 @@ superroo-medical/
   agents/prompts/          # Agent system prompts for SuperRoo
   clinical/                # Clinical decision rules and knowledge scaffolds
   reports/templates/       # Doctor-facing report templates
+  api/                     # Vercel serverless assistant endpoints
+  js/app-skills.js         # Browser assistant skill manifest
   docs/                    # Setup and workflow guides
   scans/dad/               # Local DICOM input folder placeholder
   outputs/dad/             # Output folder placeholder
@@ -52,6 +59,18 @@ outputs/dad/2026-05-01-mri/metrics.json
 outputs/dad/2026-05-01-mri/report.md
 outputs/dad/2026-05-01-mri/dicom_db/
 ```
+
+## Vercel assistant
+
+The browser app can run on Vercel with API routes for assistant reasoning and evidence counter-checks:
+
+```text
+GET  /api/knowledge
+POST /api/chat
+POST /api/web-check
+```
+
+See `docs/VERCEL_ASSISTANT.md`.
 
 ## SuperRoo instruction
 

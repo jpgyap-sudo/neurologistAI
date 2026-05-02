@@ -20,6 +20,8 @@
     imgMean: 0,
   };
 
+  const appSkills = Array.isArray(window.AppSkills) ? window.AppSkills : [];
+
   // ===== DOM =====
   const canvas = document.getElementById('imageCanvas');
   const ctx = canvas.getContext('2d');
@@ -56,6 +58,9 @@
     reader.onerror = reject;
     reader.readAsArrayBuffer(file);
   });
+
+  const isZipArchive = (name) => /\.(zip|sip)$/i.test(name);
+  const isGeneralPreviewFile = (name) => /\.(jpg|jpeg|png|bmp|gif|pdf)$/i.test(name);
 
   const setDicomMessage = (message, isError = false) => {
     const list = document.getElementById('dicomList');
@@ -167,23 +172,36 @@
       return;
     }
 
-    const zipData = await readFileAsync(file);
-    const zip = await JSZip.loadAsync(zipData);
+    let zip;
+    try {
+      const zipData = await readFileAsync(file);
+      zip = await JSZip.loadAsync(zipData);
+    } catch (e) {
+      console.warn('Failed to read ZIP archive', file.name, e);
+      setDicomMessage(`Could not read ${file.name} as a ZIP archive.`, true);
+      return;
+    }
+
     const entries = [];
     zip.forEach((relativePath, zipEntry) => {
       if (!zipEntry.dir) entries.push(zipEntry);
     });
+
     for (const entry of entries) {
       const name = entry.name.toLowerCase();
       const blob = await entry.async('blob');
       const extractedFile = new File([blob], entry.name, { type: blob.type || 'application/octet-stream' });
-      if (name.endsWith('.dcm') || name.endsWith('.dicom')) {
-        const parsed = await parseDicom(extractedFile);
-        if (parsed) state.dicomFiles.push(parsed);
-      } else if (/\.(jpg|jpeg|png|bmp|gif|pdf)$/i.test(name)) {
+      if (isGeneralPreviewFile(name)) {
         const objectURL = URL.createObjectURL(extractedFile);
         state.generalFiles.push({ file: extractedFile, objectURL, type: extractedFile.type });
+      } else {
+        const parsed = await parseDicom(extractedFile);
+        if (parsed) state.dicomFiles.push(parsed);
       }
+    }
+
+    if (state.dicomFiles.length === 0 && state.generalFiles.length === 0) {
+      setDicomMessage(`No readable DICOM, image, or PDF files were found inside ${file.name}.`, true);
     }
   };
 
@@ -194,9 +212,9 @@
 
     for (const file of files) {
       const name = file.name.toLowerCase();
-      if (name.endsWith('.zip')) {
+      if (isZipArchive(name)) {
         await processZip(file);
-      } else if (!/\.(jpg|jpeg|png|bmp|gif|pdf)$/i.test(name)) {
+      } else if (!isGeneralPreviewFile(name)) {
         const parsed = await parseDicom(file);
         if (parsed) state.dicomFiles.push(parsed);
       }
@@ -204,6 +222,9 @@
     if (state.dicomFiles.length > 0 && state.activeGeneralIndex === -1) {
       state.activeIndex = 0;
       loadSlice();
+      if (typeof appendChat === 'function') {
+        appendChat(`Loaded scan context:\n${buildLoadedScanSummary()}\n\nI can answer questions about this loaded scan's metadata, slice count, dimensions, and displayed pixel statistics. I cannot provide a validated diagnosis from the image.`, 'ai');
+      }
     }
     renderDicomList();
     updateAttachedTab();
@@ -417,6 +438,117 @@
     document.getElementById('propMin').textContent = state.imgMin.toFixed(1);
     document.getElementById('propMax').textContent = state.imgMax.toFixed(1);
     document.getElementById('propMean').textContent = state.imgMean.toFixed(1);
+  };
+
+  const getDicomText = (dataSet, tag) => {
+    if (!dataSet) return '';
+    try {
+      return dataSet.string(tag) || '';
+    } catch (e) {
+      return '';
+    }
+  };
+
+  const formatDicomDate = (dateText) => {
+    if (!/^\d{8}$/.test(dateText)) return dateText || 'not available';
+    return `${dateText.slice(0, 4)}-${dateText.slice(4, 6)}-${dateText.slice(6, 8)}`;
+  };
+
+  const buildLoadedScanSummary = () => {
+    if (state.dicomFiles.length === 0) {
+      return 'No DICOM scan is currently loaded.';
+    }
+
+    const item = state.dicomFiles[state.activeIndex] || state.dicomFiles[0];
+    const ds = item.dataSet;
+    const modality = getDicomText(ds, 'x00080060') || 'not available';
+    const studyDate = formatDicomDate(getDicomText(ds, 'x00080020'));
+    const seriesDescription = getDicomText(ds, 'x0008103e') || 'not available';
+    const bodyPart = getDicomText(ds, 'x00180015') || 'not available';
+    const manufacturer = getDicomText(ds, 'x00080070') || 'not available';
+    const rows = ds ? ds.uint16('x00280010') : item.height;
+    const columns = ds ? ds.uint16('x00280011') : item.width;
+    const spacing = getDicomText(ds, 'x00280030') || 'not available';
+
+    return [
+      `Loaded DICOM files/slices: ${state.dicomFiles.length}`,
+      `Active slice: ${state.activeIndex + 1} / ${state.dicomFiles.length}`,
+      `Active file: ${item.file.name}`,
+      `Modality: ${modality}`,
+      `Study date: ${studyDate}`,
+      `Series: ${seriesDescription}`,
+      `Body part: ${bodyPart}`,
+      `Manufacturer: ${manufacturer}`,
+      `Image matrix: ${columns || item.width} x ${rows || item.height}`,
+      `Pixel spacing: ${spacing}`,
+      `Displayed pixel stats: min ${state.imgMin.toFixed(1)}, max ${state.imgMax.toFixed(1)}, mean ${state.imgMean.toFixed(1)}`
+    ].join('\n');
+  };
+
+  const generateScanAwareResponse = (userMessage) => {
+    const msg = userMessage.toLowerCase();
+    const asksAboutLoadedScan = /(scan|dicom|image|slice|series|study|file|loaded|attached|result|finding|impression|report|metadata|dimension|pixel)/.test(msg);
+    if (!asksAboutLoadedScan) return null;
+
+    const summary = buildLoadedScanSummary();
+    if (state.dicomFiles.length === 0) {
+      return `${summary}\n\nAttach a DICOM file, DICOM folder, or ZIP archive first, then ask me about the loaded scan.`;
+    }
+
+    const clinicalLimit = `\n\nImportant: I can summarize technical metadata and displayed pixel statistics from the loaded DICOM, but this browser assistant does not perform validated radiology interpretation, segmentation, callosal-angle measurement, hemorrhage-volume measurement, or diagnosis. Use the viewer and report fields for clinician-reviewed observations.`;
+
+    if (/(result|finding|impression|diagnos|hydrocephalus|nph|ex vacuo|hemorrhage|bleed|stroke)/.test(msg)) {
+      return `Here is what I know from the loaded scan right now:\n\n${summary}${clinicalLimit}\n\nFor clinical interpretation, the next step is to document visible findings in the Report tab or run the 3D Slicer analysis pipeline, then review the output with a radiologist/physician.`;
+    }
+
+    return `Here is the loaded scan context I can access:\n\n${summary}${clinicalLimit}`;
+  };
+
+  const generateAppSkillResponse = (userMessage) => {
+    const msg = userMessage.toLowerCase();
+    const asksForSkills = /(skill|module|capabilit|what can you do|inherit|integrated|know about the app|tools)/.test(msg);
+    const matchedSkills = appSkills.filter(skill =>
+      skill.keywords.some(keyword => msg.includes(keyword)) || msg.includes(skill.name.toLowerCase())
+    );
+
+    if (!asksForSkills && matchedSkills.length === 0) return null;
+
+    if (matchedSkills.length > 0) {
+      return matchedSkills.map(skill => (
+        `**${skill.name}**\n${skill.summary}\n\n**Use with current scan:** ${state.dicomFiles.length > 0 ? 'A DICOM scan is loaded, so I can combine this skill with available scan metadata and the active slice context.' : 'No DICOM scan is loaded yet; attach a scan first for scan-specific context.'}\n\n**Output:** ${skill.output}\n\n**Limit:** ${skill.limits}`
+      )).join('\n\n');
+    }
+
+    return `Yes. I know the app's built-in clinical modules and can route questions to them:\n\n${appSkills.map(skill => `- **${skill.name}**: ${skill.summary}`).join('\n')}\n\n${state.dicomFiles.length > 0 ? `Current scan context is also available:\n${buildLoadedScanSummary()}` : 'No DICOM scan is loaded yet.'}\n\nImportant: these are decision-support skills and report scaffolds. They help organize evidence and doctor-facing questions, but they do not create a validated diagnosis.`;
+  };
+
+  const getReportFields = () => ({
+    patientId: document.getElementById('patientId').value || '',
+    studyDate: document.getElementById('studyDate').value || '',
+    bodyPart: document.getElementById('bodyPart').value || '',
+    clinicalHistory: document.getElementById('clinicalHistory').value || '',
+    findings: document.getElementById('findings').value || '',
+    impression: document.getElementById('impression').value || '',
+    recommendations: document.getElementById('recommendations').value || ''
+  });
+
+  const tryServerAssistant = async (message) => {
+    if (!['http:', 'https:'].includes(window.location.protocol)) return null;
+
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        scanContext: buildLoadedScanSummary(),
+        reportFields: getReportFields(),
+        counterCheck: true
+      })
+    });
+
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload.answer || null;
   };
 
   // ===== WINDOW / LEVEL =====
@@ -676,12 +808,12 @@
     const files = Array.from(e.dataTransfer.files);
     for (const file of files) {
       const name = file.name.toLowerCase();
-      if (name.endsWith('.zip')) {
+      if (isZipArchive(name)) {
         await processZip(file);
-      } else if (!/\.(jpg|jpeg|png|bmp|gif|pdf)$/i.test(name)) {
+      } else if (!isGeneralPreviewFile(name)) {
         const parsed = await parseDicom(file);
         if (parsed) state.dicomFiles.push(parsed);
-      } else if (/\.(jpg|jpeg|png|bmp|gif|pdf)$/i.test(name)) {
+      } else if (isGeneralPreviewFile(name)) {
         const objectURL = URL.createObjectURL(file);
         state.generalFiles.push({ file, objectURL, type: file.type });
       }
@@ -728,7 +860,15 @@
     // Simulate realistic latency
     await new Promise(r => setTimeout(r, 600 + Math.random() * 800));
     hideTyping();
-    const reply = typeof generateResponse === 'function' ? generateResponse(text) : 'I am not available right now.';
+    let reply = null;
+    try {
+      reply = await tryServerAssistant(text);
+    } catch (e) {
+      console.warn('Server assistant unavailable, using local fallback.', e);
+    }
+    const scanReply = reply ? null : generateScanAwareResponse(text);
+    const skillReply = reply || scanReply ? null : generateAppSkillResponse(text);
+    reply = reply || scanReply || skillReply || (typeof generateResponse === 'function' ? generateResponse(text) : 'I am not available right now.');
     appendChat(reply, 'ai');
   };
 

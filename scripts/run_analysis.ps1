@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory=$true)][string]$OutputDir
 )
 
-$SlicerExe = "C:\Users\YOUR_NAME\AppData\Local\slicer.org\Slicer 5.8.0\Slicer.exe"
+$SlicerExe = "C:\ProgramData\slicer.org\3D Slicer 5.10.0\Slicer.exe"
 $ScriptPath = Join-Path $PSScriptRoot "analyze_slicer.py"
 
 if (!(Test-Path $SlicerExe)) {

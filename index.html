@@ -34,6 +34,7 @@
         <button class="chat-chip">Putaminal hemorrhage management</button>
         <button class="chat-chip">NPH imaging features</button>
         <button class="chat-chip">ICP management</button>
+        <button class="chat-chip">What app skills are available?</button>
       </div>
     </aside>
 
@@ -104,7 +105,7 @@
       <canvas id="imageCanvas"></canvas>
       <div class="empty-state" id="emptyState">
         <p>Attach DICOM or image files to begin</p>
-        <small>Supports DICOM (.dcm), ZIP archives, and standard images (JPG, PNG, BMP, GIF, PDF)</small>
+        <small>Supports DICOM (.dcm or extensionless), ZIP/SIP archives, and standard images (JPG, PNG, BMP, GIF, PDF)</small>
       </div>
       <div class="viewport-overlay" id="viewportOverlay"></div>
       <div class="viewer-nav" id="viewerNav" style="display:none;">
@@ -202,6 +203,7 @@
 
   <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://unpkg.com/dicom-parser@1.8.21/dist/dicomParser.min.js"></script>
+  <script src="js/app-skills.js"></script>
   <script src="js/knowledge-base.js"></script>
   <script src="js/app.js"></script>
 </body>

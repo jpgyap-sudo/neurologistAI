@@ -4,9 +4,17 @@ import json
 import os
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="SuperRoo Medical Local Slicer Service", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUN_BAT = REPO_ROOT / "scripts" / "run_analysis.bat"
