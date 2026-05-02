@@ -9,6 +9,10 @@
     "start": "vercel dev",
     "check": "node --check js/app.js && node --check js/app-skills.js && node --check api/chat.js && node --check api/knowledge.js && node --check api/web-check.js"
   },
+  "dependencies": {
+    "openai": "^4.0.0",
+    "zod": "^3.0.0"
+  },
   "engines": {
     "node": ">=18"
   }

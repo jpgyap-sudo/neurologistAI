@@ -1,18 +1,34 @@
 const fs = require('fs');
 const path = require('path');
+const { z } = require('zod');
+const OpenAI = require('openai');
 const { searchKnowledge } = require('./lib/knowledge');
 const { webCounterCheck } = require('./lib/web-check');
 const { handleOptions, readJsonBody, setCors } = require('./lib/request');
 const { validateAnswer } = require('./lib/validate');
 
-function excerpt(text, max = 700) {
-  const compact = String(text || '').replace(/\s+/g, ' ').trim();
-  return compact.length > max ? `${compact.slice(0, max)}...` : compact;
-}
-
-function wantsWebCheck(message) {
-  return /(web|internet|pubmed|source|citation|evidence|guideline|counter.?check|latest|research|paper|study|diagnos|finding|impression|hydrocephalus|nph|ex vacuo|hemorrhage|stroke|shunt|callosal|desh)/i.test(message);
-}
+// ===== ZOD SCHEMAS =====
+const ChatRequestSchema = z.object({
+  messages: z.array(z.object({
+    role: z.enum(["system", "user", "assistant"]),
+    content: z.string()
+  })).optional(),
+  message: z.string().optional(),
+  agent: z.enum(["auto", "radiology", "neurology", "rehab", "medication", "general", "research"]).optional().default("auto"),
+  context: z.object({
+    imagingMetrics: z.any().optional(),
+    lpResults: z.any().optional(),
+    dadTimeline: z.any().optional(),
+    currentScanSummary: z.any().optional(),
+    scanContext: z.string().optional(),
+    reportFields: z.any().optional()
+  }).optional().default({}),
+  scanContext: z.string().optional(),
+  reportFields: z.any().optional(),
+  counterCheck: z.boolean().optional().default(true)
+}).refine(data => data.messages || data.message, {
+  message: "Either messages or message must be provided"
+});
 
 // ===== AGENT ROUTER =====
 const AGENT_KEYWORDS = {
@@ -22,6 +38,27 @@ const AGENT_KEYWORDS = {
   rehab: ['therapy', 'rehab', 'pt', 'ot', 'speech', 'swallow', 'mobility', 'physical therapy', 'occupational therapy', 'physiotherapy', 'speech therapy', 'slt', 'splint', 'brace', 'walker', 'wheelchair', 'gait', 'balance', 'transfer', 'bowel', 'bladder', 'spasticity', 'contracture', 'pressure sore', 'bedsore', 'decubitus', 'learned non-use', 'constraint induced', 'cims', 'bobath', 'ndt', 'functional electrical stimulation', 'fes', 'botulinum', 'botox', 'tone', 'rom', 'prom', 'arom', 'mrc', 'fac', 'fm ', 'fugl-meyer', 'barthel', 'mrs', 'rankin'],
   research: ['study', 'evidence', 'paper', 'pubmed', 'trial', 'guideline', 'systematic review', 'meta-analysis', 'cohort', 'case series', 'case report', 'randomized', 'rct', 'clinical trial', 'phase ', 'protocol', 'inclusion', 'exclusion', 'endpoint', 'outcome', 'biomarker', 'efficacy', 'effectiveness', 'recommendation', 'consensus', 'society', 'aans', 'cns', 'aan', 'nice', 'sign', 'asa', 'esh', 'ich e9', 'ich e6', 'gcp', 'prisma', 'cochrane', 'medline', 'scopus', 'embase', 'cinahl', 'literature', 'bibliography', 'citation', 'reference']
 };
+
+function detectAgent(messages) {
+  const last = messages[messages.length - 1]?.content?.toLowerCase() || "";
+  let bestAgent = 'neurology';
+  let bestScore = 0;
+
+  for (const [agent, keywords] of Object.entries(AGENT_KEYWORDS)) {
+    let score = 0;
+    for (const kw of keywords) {
+      if (last.includes(kw.toLowerCase())) {
+        score += 1;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestAgent = agent;
+    }
+  }
+
+  return bestAgent;
+}
 
 function classifyAgent(message) {
   const lower = message.toLowerCase();
@@ -78,6 +115,15 @@ function buildSystemPrompt(agent) {
   return `${generic}\n\n${agentSpecific}`;
 }
 
+function excerpt(text, max = 700) {
+  const compact = String(text || '').replace(/\s+/g, ' ').trim();
+  return compact.length > max ? `${compact.slice(0, max)}...` : compact;
+}
+
+function wantsWebCheck(message) {
+  return /(web|internet|pubmed|source|citation|evidence|guideline|counter.?check|latest|research|paper|study|diagnos|finding|impression|hydrocephalus|nph|ex vacuo|hemorrhage|stroke|shunt|callosal|desh)/i.test(message);
+}
+
 function computeConfidence({ agent, overlapScore, localMatches, webResult }) {
   const hasLocal = Array.isArray(localMatches) && localMatches.length > 0;
   const hasWeb = webResult && Array.isArray(webResult.sources) && webResult.sources.length > 0;
@@ -129,9 +175,9 @@ function resolveAIProvider() {
   if (process.env.KIMI_API_KEY) {
     return {
       apiKey: process.env.KIMI_API_KEY,
-      baseUrl: 'https://api.moonshot.cn/v1',
-      model: process.env.AI_MODEL || 'moonshot-v1-32k',
-      label: process.env.AI_MODEL || 'moonshot-v1-32k'
+      baseUrl: process.env.KIMI_BASE_URL || 'https://api.moonshot.cn/v1',
+      model: process.env.KIMI_MODEL || process.env.AI_MODEL || 'moonshot-v1-32k',
+      label: process.env.KIMI_MODEL || process.env.AI_MODEL || 'moonshot-v1-32k'
     };
   }
   if (process.env.OPENAI_API_KEY) {
@@ -149,27 +195,24 @@ async function callAI({ message, scanContext, reportFields, localMatches, webRes
   const provider = resolveAIProvider();
   if (!provider) return null;
 
-  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${provider.apiKey}`,
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify({
+  const client = new OpenAI({
+    apiKey: provider.apiKey,
+    baseURL: provider.baseUrl
+  });
+
+  try {
+    const completion = await client.chat.completions.create({
       model: provider.model,
+      temperature: 0.2,
       messages: [
         { role: 'system', content: buildSystemPrompt(agent) },
         { role: 'user', content: buildModelInput({ message, scanContext, reportFields, localMatches, webResult }) }
       ]
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`AI request failed (${provider.label}): ${response.status} ${await response.text()}`);
+    });
+    return completion.choices?.[0]?.message?.content?.trim() || null;
+  } catch (error) {
+    throw new Error(`AI request failed (${provider.label}): ${error.message}`);
   }
-
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content?.trim() || null;
 }
 
 module.exports = async function handler(req, res) {
@@ -183,27 +226,51 @@ module.exports = async function handler(req, res) {
 
   try {
     const body = await readJsonBody(req);
-    const message = String(body?.message || '').trim();
-    if (!message) {
+
+    // Zod validation with backward compatibility
+    let parsed;
+    try {
+      parsed = ChatRequestSchema.parse(body);
+    } catch (zodError) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        details: zodError.errors || zodError.message
+      });
+    }
+
+    // Normalize input shapes (upgrade pack uses messages[]; legacy uses message string)
+    let messages = parsed.messages || [];
+    const scanContext = parsed.context?.scanContext || parsed.scanContext || '';
+    const reportFields = parsed.context?.reportFields || parsed.reportFields || null;
+
+    if (!parsed.messages && parsed.message) {
+      messages = [{ role: 'user', content: parsed.message }];
+    }
+
+    if (messages.length === 0) {
       res.status(400).json({ error: 'Missing message' });
       return;
     }
 
-    const scanContext = String(body?.scanContext || '').trim();
-    const reportFields = body?.reportFields || null;
+    const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
+    const message = lastUserMessage ? lastUserMessage.content : '';
 
-    const { agent, overlapScore } = classifyAgent(message);
+    // Detect / resolve agent
+    const selectedAgent = parsed.agent === 'auto' ? detectAgent(messages) : parsed.agent;
+
+    // Knowledge base + web check
+    const { agent: classifiedAgent, overlapScore } = classifyAgent(message);
     const localMatches = searchKnowledge(`${message}\n${scanContext}`, 8);
-    const shouldWebCheck = body?.counterCheck !== false && wantsWebCheck(message);
+    const shouldWebCheck = parsed.counterCheck !== false && wantsWebCheck(message);
     const webResult = shouldWebCheck ? await webCounterCheck(message, 5) : null;
 
-    let finalConfidence = computeConfidence({ agent, overlapScore, localMatches, webResult });
+    let finalConfidence = computeConfidence({ agent: selectedAgent, overlapScore, localMatches, webResult });
     let finalRequiresHumanReview = finalConfidence === 'low';
 
     const provider = resolveAIProvider();
     let answer = null;
     try {
-      answer = await callAI({ message, scanContext, reportFields, localMatches, webResult, agent });
+      answer = await callAI({ message, scanContext, reportFields, localMatches, webResult, agent: selectedAgent });
     } catch (error) {
       answer = `${buildFallbackAnswer({ message, scanContext, localMatches, webResult })}\n\nAI model note: ${error.message}`;
     }
@@ -224,7 +291,7 @@ module.exports = async function handler(req, res) {
           },
           query: message,
           scanContext,
-          agent,
+          agent: selectedAgent,
           reportFields
         });
       } catch (validationError) {
@@ -244,10 +311,12 @@ module.exports = async function handler(req, res) {
     }
 
     res.status(200).json({
+      reply: answer,
       answer,
       confidence: finalConfidence,
       requiresHumanReview: finalRequiresHumanReview,
-      agentUsed: agent,
+      agentUsed: selectedAgent,
+      agent: selectedAgent,
       local_sources: localMatches.map(match => ({
         path: match.path,
         chunk_index: match.chunk_index,

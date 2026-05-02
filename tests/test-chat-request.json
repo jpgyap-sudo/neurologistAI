@@ -1,0 +1,16 @@
+{
+  "agent": "neurology",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Dad had large-volume LP twice, 40 mL removed each time, no objective improvement. How should this affect NPH vs ex vacuo shunt-benefit reasoning?"
+    }
+  ],
+  "context": {
+    "lpResults": {
+      "large_volume_lp_count": 2,
+      "removed_ml_each": 40,
+      "objective_improvement": false
+    }
+  }
+}

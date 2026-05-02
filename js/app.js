@@ -594,6 +594,8 @@
     recommendations: document.getElementById('recommendations').value || ''
   });
 
+  // Optional: import sendClinicalChat from js/chatClient.js if using module bundler.
+  // For script-tag usage, window.sendClinicalChat can be set by a module script.
   const tryServerAssistant = async (message) => {
     if (!['http:', 'https:'].includes(window.location.protocol)) return null;
 
