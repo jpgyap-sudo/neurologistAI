@@ -13,3 +13,15 @@ export async function analyzeDicomWithSlicer({ dicomDir, slicerServiceUrl }) {
 
   return response.json();
 }
+
+export async function checkSlicerHealth({ slicerServiceUrl } = {}) {
+  const baseUrl = slicerServiceUrl || window.SLICER_SERVICE_URL || "http://127.0.0.1:8787";
+  const response = await fetch(`${baseUrl}/health`);
+  if (!response.ok) {
+    throw new Error(`Slicer health HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+window.analyzeDicomWithSlicer = analyzeDicomWithSlicer;
+window.checkSlicerHealth = checkSlicerHealth;

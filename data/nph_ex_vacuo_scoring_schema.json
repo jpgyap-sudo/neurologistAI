@@ -1,0 +1,66 @@
+{
+  "name": "nph_vs_ex_vacuo_scoring_schema",
+  "version": "1.0",
+  "description": "Structured scoring system for differentiating NPH from hydrocephalus ex vacuo. Educational use only.",
+  "fields": {
+    "structural_brain_injury": {
+      "type": "boolean",
+      "ex_vacuo_points_if_true": 2,
+      "nph_points_if_false": 1,
+      "notes": "Large hemorrhage, infarct, encephalomalacia, surgery, traumatic injury."
+    },
+    "ventricular_asymmetry_matching_lesion": {
+      "type": "boolean",
+      "ex_vacuo_points_if_true": 2,
+      "notes": "Strong sign of passive expansion into damaged territory."
+    },
+    "symmetric_ventriculomegaly": {
+      "type": "boolean",
+      "nph_points_if_true": 1,
+      "notes": "Supports NPH if not explained by atrophy."
+    },
+    "high_convexity_sulci_tight": {
+      "type": "boolean",
+      "nph_points_if_true": 2,
+      "notes": "Key DESH/NPH sign."
+    },
+    "sulci_widened_due_to_atrophy": {
+      "type": "boolean",
+      "ex_vacuo_points_if_true": 2,
+      "notes": "Strong ex vacuo sign."
+    },
+    "sylvian_fissures_disproportionately_enlarged": {
+      "type": "boolean",
+      "nph_points_if_true": 1,
+      "notes": "Supports DESH when combined with tight high-convexity sulci."
+    },
+    "desh_present": {
+      "type": "boolean",
+      "nph_points_if_true": 3,
+      "ex_vacuo_points_if_false": 1,
+      "notes": "High-value NPH marker."
+    },
+    "tap_test_improvement": {
+      "type": "boolean",
+      "nph_points_if_true": 3,
+      "ex_vacuo_points_if_false": 2,
+      "notes": "Repeated negative high-volume LP strongly argues against clinically significant shunt-responsive NPH."
+    },
+    "lp_opening_pressure_cm_h2o": {
+      "type": "number",
+      "notes": "Normal pressure is compatible with both NPH and ex vacuo. Interpret weakly."
+    },
+    "rout_abnormal": {
+      "type": "boolean_or_unknown",
+      "nph_points_if_true": 3,
+      "ex_vacuo_points_if_false": 2,
+      "notes": "CSF infusion test if available."
+    }
+  },
+  "interpretation": {
+    "ex_vacuo_dominant": "ex_vacuo_score >= 7 and nph_score <= 3",
+    "nph_likely": "nph_score >= 7 and ex_vacuo_score <= 3",
+    "mixed_or_indeterminate": "both scores high or both intermediate",
+    "recommendation": "Use scoring only as decision support; final interpretation requires physician review."
+  }
+}

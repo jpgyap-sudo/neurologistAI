@@ -4,7 +4,8 @@ setlocal enabledelayedexpansion
 REM Usage:
 REM scripts\run_analysis.bat <input_dicom_dir> <output_dir>
 
-set SLICER_EXE=C:\ProgramData\slicer.org\3D Slicer 5.10.0\Slicer.exe
+if "%SLICER_EXE%"=="" set SLICER_EXE=C:\ProgramData\slicer.org\3D Slicer 5.10.0\Slicer.exe
+if "%SLICER_SCRIPT%"=="" set SLICER_SCRIPT=%~dp0analyze_slicer.py
 
 if "%~1"=="" (
   echo Missing input DICOM directory.
@@ -27,4 +28,4 @@ if not exist "%SLICER_EXE%" (
   exit /b 1
 )
 
-"%SLICER_EXE%" --no-main-window --python-script "%~dp0analyze_slicer.py" -- "%INPUT_DIR%" "%OUTPUT_DIR%"
+"%SLICER_EXE%" --no-main-window --python-script "%SLICER_SCRIPT%" -- "%INPUT_DIR%" "%OUTPUT_DIR%"

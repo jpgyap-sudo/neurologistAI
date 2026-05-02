@@ -20,6 +20,9 @@
     imgMin: 0,
     imgMax: 0,
     imgMean: 0,
+    slicerResult: null,
+    evansMeasurement: null,
+    deshMeasurement: null,
     generalImageCache: {},   // { [objectURL]: HTMLImageElement }
   };
 
@@ -547,6 +550,186 @@
     ].join('\n');
   };
 
+  const summarizeSlicerMetrics = () => {
+    const metrics = state.slicerResult?.metrics;
+    const evansSummary = summarizeEvansMeasurement();
+    if (!metrics) return `Local Slicer analysis: not run.\n${evansSummary}`;
+    const hydro = metrics.hydrocephalus_metrics || {};
+    const callosal = metrics.callosal_angle_workflow || {};
+    return [
+      evansSummary,
+      `Local Slicer analysis status: ${state.slicerResult.status || metrics.status || 'unknown'}`,
+      `Output: ${state.slicerResult.output_dir || metrics.output_dir || 'not available'}`,
+      `Automated Evans index candidate: ${hydro.evans_index ?? 'not available'}`,
+      `Evans >= 0.30: ${hydro.evans_index_supports_ventriculomegaly ?? 'not available'}`,
+      `Ventricular asymmetry ratio: ${hydro.ventricular_asymmetry_ratio ?? 'not available'}`,
+      `Hydrocephalus metric confidence: ${hydro.confidence || hydro.status || 'not available'}`,
+      `Callosal angle workflow: ${callosal.status || 'not available'}`,
+      `Coronal package: ${callosal.coronal_reconstruction_package || 'not available'}`
+    ].join('\n');
+  };
+
+  const getEvansCategory = (value) => {
+    if (value === null || Number.isNaN(value)) return 'not_available';
+    if (value < 0.30) return 'below_ventriculomegaly_threshold';
+    if (value < 0.33) return 'borderline_or_mild_ventriculomegaly';
+    return 'supports_ventriculomegaly';
+  };
+
+  const summarizeEvansMeasurement = () => {
+    if (!state.evansMeasurement) return 'Manual/radiology Evans index: not entered.';
+    const m = state.evansMeasurement;
+    const parts = [
+      `Manual/radiology Evans index: ${m.value.toFixed(3)}`,
+      `Measurement source: ${m.source}`,
+      `Evans interpretation band: ${m.category}`
+    ];
+    if (m.frontalHornWidthMm && m.innerSkullWidthMm) {
+      parts.push(`Manual widths: frontal horns ${m.frontalHornWidthMm.toFixed(1)} mm / inner skull ${m.innerSkullWidthMm.toFixed(1)} mm`);
+    }
+    return parts.join('\n');
+  };
+
+  const setEvansStatus = (message, kind = '') => {
+    const status = document.getElementById('evansStatus');
+    if (!status) return;
+    status.className = `engine-status ${kind}`;
+    status.textContent = message;
+  };
+
+  const setDeshStatus = (message, kind = '') => {
+    const status = document.getElementById('deshStatus');
+    if (!status) return;
+    status.className = `engine-status ${kind}`;
+    status.textContent = message;
+  };
+
+  const saveEvansMeasurementFromInputs = () => {
+    const directInput = document.getElementById('radiologyEvansIndex');
+    const hornInput = document.getElementById('frontalHornWidth');
+    const skullInput = document.getElementById('innerSkullWidth');
+    const direct = parseFloat(directInput?.value || '');
+    const horn = parseFloat(hornInput?.value || '');
+    const skull = parseFloat(skullInput?.value || '');
+
+    let value = null;
+    let source = '';
+    if (!Number.isNaN(direct) && direct > 0 && direct < 1) {
+      value = direct;
+      source = 'radiology_or_manual_entry';
+    } else if (!Number.isNaN(horn) && !Number.isNaN(skull) && horn > 0 && skull > 0) {
+      value = horn / skull;
+      source = 'manual_width_calculation';
+    }
+
+    if (value === null) {
+      setEvansStatus('Enter either a radiology/manual Evans index, or both width measurements.', 'error');
+      return;
+    }
+
+    state.evansMeasurement = {
+      value,
+      source,
+      category: getEvansCategory(value),
+      frontalHornWidthMm: !Number.isNaN(horn) && horn > 0 ? horn : null,
+      innerSkullWidthMm: !Number.isNaN(skull) && skull > 0 ? skull : null
+    };
+
+    setEvansStatus(summarizeEvansMeasurement().replace(/\n/g, ' | '), 'ok');
+  };
+
+  const saveDeshMeasurementFromInputs = () => {
+    const deshSelect = document.getElementById('deshPatternToggle');
+    const evansNumeric = document.getElementById('evansIndexNumeric');
+    const deshValue = deshSelect?.value || '';
+    const evansValue = parseFloat(evansNumeric?.value || '');
+
+    if (deshValue === '' && Number.isNaN(evansValue)) {
+      setDeshStatus('Select DESH yes/no or enter an Evans index.', 'error');
+      return;
+    }
+
+    state.deshMeasurement = {
+      deshPattern: deshValue === 'yes' ? true : (deshValue === 'no' ? false : null),
+      evansIndex: !Number.isNaN(evansValue) && evansValue > 0 && evansValue < 1 ? evansValue : null,
+      source: 'manual_frontend_entry'
+    };
+
+    const parts = [];
+    if (state.deshMeasurement.deshPattern !== null) {
+      parts.push(`DESH pattern: ${state.deshMeasurement.deshPattern ? 'Yes' : 'No'}`);
+    }
+    if (state.deshMeasurement.evansIndex !== null) {
+      parts.push(`Evans index: ${state.deshMeasurement.evansIndex.toFixed(3)}`);
+    }
+    setDeshStatus(parts.join(' | ') || 'No data saved.', 'ok');
+  };
+
+  const renderSlicerResult = (payload) => {
+    const status = document.getElementById('slicerStatus');
+    const output = document.getElementById('slicerMetrics');
+    if (!status || !output) return;
+
+    const metrics = payload?.metrics || payload;
+    const hydro = metrics?.hydrocephalus_metrics || {};
+    const callosal = metrics?.callosal_angle_workflow || {};
+    const statusText = payload?.status || metrics?.status || 'unknown';
+
+    status.className = `engine-status ${statusText === 'completed' || statusText === 'loaded_successfully' ? 'ok' : ''}`;
+    status.textContent = `Slicer result: ${statusText}. Experimental measurements require manual clinician/radiology confirmation.`;
+    output.textContent = JSON.stringify({
+      job_id: payload?.job_id,
+      output_dir: payload?.output_dir || metrics?.output_dir,
+      evans_index: hydro.evans_index,
+      evans_index_supports_ventriculomegaly: hydro.evans_index_supports_ventriculomegaly,
+      ventricular_asymmetry_ratio: hydro.ventricular_asymmetry_ratio,
+      hydrocephalus_metric_confidence: hydro.confidence || hydro.status,
+      callosal_angle_workflow: callosal.status,
+      coronal_reconstruction_package: callosal.coronal_reconstruction_package,
+      limitations: hydro.limitations || []
+    }, null, 2);
+  };
+
+  const setSlicerStatus = (message, kind = '') => {
+    const status = document.getElementById('slicerStatus');
+    if (!status) return;
+    status.className = `engine-status ${kind}`;
+    status.textContent = message;
+  };
+
+  const getSlicerBaseUrl = () => (
+    document.getElementById('slicerServiceUrl')?.value.trim() ||
+    window.SLICER_SERVICE_URL ||
+    'http://127.0.0.1:8787'
+  );
+
+  const checkLocalSlicerHealth = async (slicerServiceUrl) => {
+    if (typeof window.checkSlicerHealth === 'function') {
+      return window.checkSlicerHealth({ slicerServiceUrl });
+    }
+    const response = await fetch(`${slicerServiceUrl}/health`);
+    if (!response.ok) {
+      throw new Error(`Slicer health HTTP ${response.status}`);
+    }
+    return response.json();
+  };
+
+  const analyzeLocalDicomWithSlicer = async ({ dicomDir, slicerServiceUrl }) => {
+    if (typeof window.analyzeDicomWithSlicer === 'function') {
+      return window.analyzeDicomWithSlicer({ dicomDir, slicerServiceUrl });
+    }
+    const response = await fetch(`${slicerServiceUrl}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dicom_dir: dicomDir })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || err.details || err.error || `Slicer HTTP ${response.status}`);
+    }
+    return response.json();
+  };
+
   const generateScanAwareResponse = (userMessage) => {
     const msg = userMessage.toLowerCase();
     const asksAboutLoadedScan = /(scan|dicom|image|slice|series|study|file|loaded|attached|result|finding|impression|report|metadata|dimension|pixel)/.test(msg);
@@ -557,13 +740,13 @@
       return `${summary}\n\nAttach a DICOM file, DICOM folder, or ZIP archive first, then ask me about the loaded scan.`;
     }
 
-    const clinicalLimit = `\n\nImportant: I can summarize technical metadata and displayed pixel statistics from the loaded DICOM, but this browser assistant does not perform validated radiology interpretation, segmentation, callosal-angle measurement, hemorrhage-volume measurement, or diagnosis. Use the viewer and report fields for clinician-reviewed observations.`;
+    const clinicalLimit = `\n\nImportant: I can summarize technical metadata, displayed pixel statistics, and any returned local Slicer decision-support metrics. These are not validated radiology interpretation, diagnosis, or treatment instructions. Use the viewer, Slicer output, and report fields for clinician-reviewed observations.`;
 
     if (/(result|finding|impression|diagnos|hydrocephalus|nph|ex vacuo|hemorrhage|bleed|stroke)/.test(msg)) {
-      return `Here is what I know from the loaded scan right now:\n\n${summary}${clinicalLimit}\n\nFor clinical interpretation, the next step is to document visible findings in the Report tab or run the 3D Slicer analysis pipeline, then review the output with a radiologist/physician.`;
+      return `Here is what I know from the loaded scan right now:\n\n${summary}\n\n${summarizeSlicerMetrics()}${clinicalLimit}\n\nFor clinical interpretation, document visible findings in the Report tab and review any 3D Slicer output with a radiologist/physician.`;
     }
 
-    return `Here is the loaded scan context I can access:\n\n${summary}${clinicalLimit}`;
+    return `Here is the loaded scan context I can access:\n\n${summary}\n\n${summarizeSlicerMetrics()}${clinicalLimit}`;
   };
 
   const generateAppSkillResponse = (userMessage) => {
@@ -591,7 +774,9 @@
     clinicalHistory: document.getElementById('clinicalHistory').value || '',
     findings: document.getElementById('findings').value || '',
     impression: document.getElementById('impression').value || '',
-    recommendations: document.getElementById('recommendations').value || ''
+    recommendations: document.getElementById('recommendations').value || '',
+    evansMeasurement: state.evansMeasurement,
+    deshMeasurement: state.deshMeasurement
   });
 
   // Optional: import sendClinicalChat from js/chatClient.js if using module bundler.
@@ -604,7 +789,7 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         message,
-        scanContext: buildLoadedScanSummary(),
+        scanContext: `${buildLoadedScanSummary()}\n\n${summarizeSlicerMetrics()}`,
         reportFields: getReportFields(),
         counterCheck: true
       })
@@ -620,7 +805,8 @@
     neurology: { icon: '🧠', label: 'Neurology Agent' },
     medication: { icon: '💊', label: 'Medication Agent' },
     rehab: { icon: '🏃', label: 'Rehab Agent' },
-    research: { icon: '📚', label: 'Research Agent' }
+    research: { icon: '📚', label: 'Research Agent' },
+    nph_ex_vacuo: { icon: '⚖️', label: 'NPH vs Ex Vacuo Agent' }
   };
 
   const appendAiResponse = (data) => {
@@ -948,6 +1134,13 @@
     const findings = document.getElementById('findings').value;
     const impression = document.getElementById('impression').value;
     const recommendations = document.getElementById('recommendations').value;
+    const evansReport = state.evansMeasurement
+      ? `${state.evansMeasurement.value.toFixed(3)} (${state.evansMeasurement.source}; ${state.evansMeasurement.category})`
+      : 'Not entered';
+
+    const deshReport = state.deshMeasurement
+      ? `DESH: ${state.deshMeasurement.deshPattern !== null ? (state.deshMeasurement.deshPattern ? 'Yes' : 'No') : 'N/A'}; Evans: ${state.deshMeasurement.evansIndex !== null ? state.deshMeasurement.evansIndex.toFixed(3) : 'N/A'}`
+      : 'Not entered';
 
     const html = `
       <div style="font-family:Arial,sans-serif; line-height:1.5; color:#111;">
@@ -962,6 +1155,9 @@
         <p>${escapeHtml(history) || 'N/A'}</p>
         <h3>Findings</h3>
         <p>${escapeHtml(findings) || 'N/A'}</p>
+        <h3>Decision-Support Measurements</h3>
+        <p><strong>Evans index:</strong> ${escapeHtml(evansReport)}</p>
+        <p><strong>DESH pattern:</strong> ${escapeHtml(deshReport)}</p>
         <h3>Impression</h3>
         <p>${escapeHtml(impression) || 'N/A'}</p>
         <h3>Recommendations</h3>
@@ -1077,6 +1273,75 @@
 
   chatSend.addEventListener('click', sendChat);
   chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+
+  const saveEvansMeasurementButton = document.getElementById('saveEvansMeasurement');
+  saveEvansMeasurementButton?.addEventListener('click', () => {
+    saveEvansMeasurementFromInputs();
+    if (state.evansMeasurement) {
+      appendChat(`Saved Evans index measurement:\n${summarizeEvansMeasurement()}`, 'ai');
+    }
+  });
+
+  const saveDeshAndEvansButton = document.getElementById('saveDeshAndEvans');
+  saveDeshAndEvansButton?.addEventListener('click', () => {
+    saveDeshMeasurementFromInputs();
+    if (state.deshMeasurement) {
+      const lines = [];
+      if (state.deshMeasurement.deshPattern !== null) {
+        lines.push(`DESH: ${state.deshMeasurement.deshPattern ? 'Yes' : 'No'}`);
+      }
+      if (state.deshMeasurement.evansIndex !== null) {
+        lines.push(`Evans: ${state.deshMeasurement.evansIndex.toFixed(3)}`);
+      }
+      if (lines.length) {
+        appendChat(`Saved DESH / Evans data:\n${lines.join('\n')}`, 'ai');
+      }
+    }
+  });
+
+  const slicerServiceUrlInput = document.getElementById('slicerServiceUrl');
+  const slicerDicomDirInput = document.getElementById('slicerDicomDir');
+  const checkSlicerHealthButton = document.getElementById('checkSlicerHealth');
+  const runSlicerAnalysisButton = document.getElementById('runSlicerAnalysis');
+
+  checkSlicerHealthButton?.addEventListener('click', async () => {
+    const slicerServiceUrl = getSlicerBaseUrl();
+    setSlicerStatus('Checking local Slicer service...');
+    try {
+      const health = await checkLocalSlicerHealth(slicerServiceUrl);
+      const ready = health.slicer_exe_exists && health.slicer_script_exists;
+      setSlicerStatus(
+        ready
+          ? `Service ready. Slicer: ${health.slicer_exe}`
+          : `Service reachable, but configuration is incomplete. Slicer exe exists: ${health.slicer_exe_exists}; script exists: ${health.slicer_script_exists}.`,
+        ready ? 'ok' : 'error'
+      );
+    } catch (err) {
+      setSlicerStatus(`Service unavailable: ${err.message}. Start it with python service/server.py.`, 'error');
+    }
+  });
+
+  runSlicerAnalysisButton?.addEventListener('click', async () => {
+    const slicerServiceUrl = getSlicerBaseUrl();
+    const dicomDir = slicerDicomDirInput?.value.trim();
+    if (!dicomDir) {
+      setSlicerStatus('Enter a real local folder path first. Browser-attached files are viewable here, but Slicer needs a filesystem folder such as C:\\tmp\\ctscan-dicom-test.', 'error');
+      return;
+    }
+
+    setSlicerStatus('Running local 3D Slicer analysis. This can take several minutes...');
+    runSlicerAnalysisButton.disabled = true;
+    try {
+      const payload = await analyzeLocalDicomWithSlicer({ dicomDir, slicerServiceUrl });
+      state.slicerResult = payload;
+      renderSlicerResult(payload);
+      appendChat(`Local Slicer analysis returned:\n${summarizeSlicerMetrics()}`, 'ai');
+    } catch (err) {
+      setSlicerStatus(`Slicer analysis failed: ${err.message}`, 'error');
+    } finally {
+      runSlicerAnalysisButton.disabled = false;
+    }
+  });
 
   document.querySelectorAll('.chat-chip').forEach(chip => {
     chip.addEventListener('click', () => {

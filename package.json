@@ -7,7 +7,7 @@
     "build": "node -e \"console.log('Static app with Vercel serverless APIs: no build step needed')\"",
     "dev": "vercel dev",
     "start": "vercel dev",
-    "check": "node --check js/app.js && node --check js/app-skills.js && node --check api/chat.js && node --check api/knowledge.js && node --check api/web-check.js"
+    "check": "node --check js/app.js && node --check js/app-skills.js && node --check js/chatClient.js && node --check js/slicerClient.js && node --check api/chat.js && node --check api/knowledge.js && node --check api/web-check.js"
   },
   "dependencies": {
     "openai": "^4.0.0",

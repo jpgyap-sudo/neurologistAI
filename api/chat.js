@@ -14,7 +14,7 @@ const ChatRequestSchema = z.object({
     content: z.string()
   })).optional(),
   message: z.string().optional(),
-  agent: z.enum(["auto", "radiology", "neurology", "rehab", "medication", "general", "research"]).optional().default("auto"),
+  agent: z.enum(["auto", "radiology", "neurology", "rehab", "medication", "general", "research", "nph_ex_vacuo"]).optional().default("auto"),
   context: z.object({
     imagingMetrics: z.any().optional(),
     lpResults: z.any().optional(),
@@ -34,6 +34,7 @@ const ChatRequestSchema = z.object({
 const AGENT_KEYWORDS = {
   radiology: ['scan', 'ct', 'mri', 'ventricle', 'hydrocephalus', 'desh', 'imaging', 'report', 'x-ray', 'ultrasound', 'pet', 'angiography', 'radiograph', 'tomography', 'contrast', 'effacement', 'sulci', 'fissure', 'evans index', 'callosal angle', 'temporal horn', 'edema', 'flair', 't1', 't2', 'dwu', 'dwi', 'slice', 'dicom', 'attenuation', 'hyperdense', 'hypodense', 'mass effect', 'midline shift'],
   neurology: ['neuro', 'consciousness', 'mcs', 'crs-r', 'seizure', 'stroke', 'icp', 'gcs', 'coma', 'vegetative', 'minimally conscious', 'alertness', 'arousal', 'cognition', 'dementia', 'parkinson', 'als', 'myasthenia', 'meningitis', 'encephalitis', 'subarachnoid', 'subdural', 'epidural', 'hematoma', 'aneurysm', 'vasospasm', 'cerebral perfusion', 'herniation', 'brain death', 'neuro exam', 'pupil', 'reflex', 'tone', 'clonus', 'babinski', 'nystagmus', 'aphasia', 'apraxia', 'ataxia', 'neuropathy', 'myelopathy', 'synkinesis'],
+  nph_ex_vacuo: ['nph vs ex vacuo', 'ex vacuo', 'shunt responsive', 'csf drainage response', 'tap test', 'hydrocephalus ex vacuo differentiation', 'normal pressure hydrocephalus vs atrophy'],
   medication: ['drug', 'med', 'amantadine', 'baclofen', 'interaction', 'prescription', 'pharmacy', 'pharmacology', 'dose', 'dosage', 'taper', 'withdrawal', 'side effect', 'adverse', 'contraindication', 'sedative', 'hypnotic', 'antipsychotic', 'anticholinergic', 'antiepileptic', 'antihypertensive', 'neurostimulant', 'methylphenidate', 'modafinil', 'tizanidine', 'antibiotic', 'vancomycin', 'phenytoin', 'levetiracetam', 'mannitol', 'hypertonic', 'aspirin', 'clopidogrel', 'warfarin', 'heparin', ' doac ', 'anticoagulant', 'thrombolytic', 'rtpa', 'alteplase'],
   rehab: ['therapy', 'rehab', 'pt', 'ot', 'speech', 'swallow', 'mobility', 'physical therapy', 'occupational therapy', 'physiotherapy', 'speech therapy', 'slt', 'splint', 'brace', 'walker', 'wheelchair', 'gait', 'balance', 'transfer', 'bowel', 'bladder', 'spasticity', 'contracture', 'pressure sore', 'bedsore', 'decubitus', 'learned non-use', 'constraint induced', 'cims', 'bobath', 'ndt', 'functional electrical stimulation', 'fes', 'botulinum', 'botox', 'tone', 'rom', 'prom', 'arom', 'mrc', 'fac', 'fm ', 'fugl-meyer', 'barthel', 'mrs', 'rankin'],
   research: ['study', 'evidence', 'paper', 'pubmed', 'trial', 'guideline', 'systematic review', 'meta-analysis', 'cohort', 'case series', 'case report', 'randomized', 'rct', 'clinical trial', 'phase ', 'protocol', 'inclusion', 'exclusion', 'endpoint', 'outcome', 'biomarker', 'efficacy', 'effectiveness', 'recommendation', 'consensus', 'society', 'aans', 'cns', 'aan', 'nice', 'sign', 'asa', 'esh', 'ich e9', 'ich e6', 'gcp', 'prisma', 'cochrane', 'medline', 'scopus', 'embase', 'cinahl', 'literature', 'bibliography', 'citation', 'reference']
@@ -86,7 +87,8 @@ const AGENT_FILE_MAP = {
   neurology: 'neurology_agent.md',
   medication: 'medication_review_agent.md',
   rehab: 'rehab_agent.md',
-  research: 'research_librarian_agent.md'
+  research: 'research_librarian_agent.md',
+  nph_ex_vacuo: 'nph_ex_vacuo_agent.md'
 };
 
 function loadAgentPrompt(agent) {
@@ -173,19 +175,23 @@ function buildModelInput({ message, scanContext, reportFields, localMatches, web
 
 function resolveAIProvider() {
   if (process.env.KIMI_API_KEY) {
+    const model = process.env.KIMI_MODEL || process.env.AI_MODEL || 'moonshot-v1-32k';
     return {
       apiKey: process.env.KIMI_API_KEY,
       baseUrl: process.env.KIMI_BASE_URL || 'https://api.moonshot.cn/v1',
-      model: process.env.KIMI_MODEL || process.env.AI_MODEL || 'moonshot-v1-32k',
-      label: process.env.KIMI_MODEL || process.env.AI_MODEL || 'moonshot-v1-32k'
+      model,
+      label: model,
+      temperature: model === 'kimi-k2.6' ? 1 : 0.2
     };
   }
   if (process.env.OPENAI_API_KEY) {
+    const model = process.env.AI_MODEL || 'gpt-4.1-mini';
     return {
       apiKey: process.env.OPENAI_API_KEY,
       baseUrl: 'https://api.openai.com/v1',
-      model: process.env.AI_MODEL || 'gpt-4.1-mini',
-      label: process.env.AI_MODEL || 'gpt-4.1-mini'
+      model,
+      label: model,
+      temperature: 0.2
     };
   }
   return null;
@@ -203,7 +209,7 @@ async function callAI({ message, scanContext, reportFields, localMatches, webRes
   try {
     const completion = await client.chat.completions.create({
       model: provider.model,
-      temperature: 0.2,
+      temperature: provider.temperature,
       messages: [
         { role: 'system', content: buildSystemPrompt(agent) },
         { role: 'user', content: buildModelInput({ message, scanContext, reportFields, localMatches, webResult }) }

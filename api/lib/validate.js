@@ -20,6 +20,9 @@ function resolveValidationModel(baseModel) {
   if (process.env.VALIDATION_MODEL) {
     return process.env.VALIDATION_MODEL;
   }
+  if (!baseModel && process.env.KIMI_MODEL) {
+    return process.env.KIMI_MODEL;
+  }
   const map = {
     'gpt-4.1': 'gpt-4.1-mini',
     'gpt-4.1-mini': 'gpt-4.1-mini',
@@ -33,7 +36,7 @@ function resolveAIProvider(mappedModel) {
   if (process.env.KIMI_API_KEY) {
     return {
       apiKey: process.env.KIMI_API_KEY,
-      baseUrl: 'https://api.moonshot.cn/v1',
+      baseUrl: process.env.KIMI_BASE_URL || 'https://api.moonshot.cn/v1',
       model: mappedModel,
       label: mappedModel
     };

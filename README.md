@@ -35,3 +35,30 @@ Then run:
 npm run dev
 ```
 
+## Local Slicer engine
+
+The Analysis tab now includes a Local Slicer Engine panel.
+
+Start the service:
+
+```bash
+python service/server.py
+```
+
+Then check:
+
+```bash
+curl http://127.0.0.1:8787/health
+```
+
+The service works without FastAPI installed by using a small built-in HTTP server. If FastAPI is installed, `service.server:app` is still available for `uvicorn`.
+
+The Slicer script writes:
+
+- technical loaded-volume metadata
+- experimental Evans index candidate
+- experimental ventricular asymmetry candidate
+- callosal-angle coronal reconstruction workflow package
+- report text with limitations
+
+These are decision-support measurements only. Manual Slicer/radiology confirmation is required before clinical use.

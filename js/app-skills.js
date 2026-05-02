@@ -7,11 +7,11 @@ window.AppSkills = [
     output: 'Callosal angle in degrees plus confidence level and limitations.'
   },
   {
-    name: 'DESH / NPH Imaging Checklist',
-    keywords: ['desh', 'nph', 'normal pressure hydrocephalus', 'tight convexity', 'sylvian'],
-    summary: 'Organizes imaging signs that support or argue against NPH morphology, including tight high-convexity sulci and enlarged Sylvian fissures.',
-    limits: 'The browser viewer does not automatically segment sulci or ventricles.',
-    output: 'Structured evidence list for clinician review.'
+    name: 'DESH Assessment',
+    keywords: ['desh', 'nph', 'normal pressure hydrocephalus', 'tight convexity', 'sylvian', 'desh pattern'],
+    summary: 'Guides assessment of the DESH (disproportionately enlarged subarachnoid-space hydrocephalus) pattern on axial or coronal imaging.',
+    limits: 'The browser viewer does not automatically segment sulci or ventricles. Requires manual review by a radiologist or clinician. Asymmetric post-hemorrhagic distortion reduces reliability.',
+    output: 'DESH pattern present/absent, confidence level, and structured evidence list for clinician review.'
   },
   {
     name: 'Hydrocephalus Ex Vacuo Rules',
@@ -61,5 +61,19 @@ window.AppSkills = [
     summary: 'Provides structured imaging, LP response, shunt decision, radiology, and neurology report sections.',
     limits: 'Templates organize observations; they do not replace radiology interpretation.',
     output: 'Doctor-facing report language.'
+  },
+  {
+    name: 'Evans Index Measurement',
+    keywords: ['evans index', 'evans ratio', 'frontal horn', 'ventriculomegaly'],
+    summary: 'Guides manual measurement of the Evans index (frontal horn ratio) on axial imaging.',
+    limits: 'Requires true axial plane, correct level through frontal horns, and clear calvarial margins.',
+    output: 'Evans index ratio plus confidence level and limitations.'
+  },
+  {
+    name: 'NPH vs Hydrocephalus Ex Vacuo',
+    keywords: ['nph vs ex vacuo', 'nph versus ex vacuo', 'shunt responsive', 'hydrocephalus ex vacuo differentiation', 'desh vs atrophy', 'tap test nph', 'csf drainage response', 'normal pressure hydrocephalus vs atrophy'],
+    summary: 'Structured differentiation of Normal Pressure Hydrocephalus from hydrocephalus ex vacuo using imaging morphology, CSF tests, and clinical context. Includes scoring schema, doctor checklists, and shunt decision support.',
+    limits: 'Requires accurate imaging interpretation, objective LP/ELD assessment, and specialist input. Does not replace neurosurgical judgment.',
+    output: 'Pattern classification (NPH likely, ex vacuo dominant, mixed/indeterminate), evidence table, missing data list, shunt benefit estimate, risk concerns, and doctor-facing questions.'
   }
 ];

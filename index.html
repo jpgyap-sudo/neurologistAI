@@ -146,6 +146,59 @@
           <h4>Measurements</h4>
           <ul id="measurementList"></ul>
         </div>
+        <div class="info-group evans-group">
+          <h4>Evans Index</h4>
+          <div class="form-group">
+            <label for="radiologyEvansIndex">Radiology / Manual Evans Index</label>
+            <input type="number" id="radiologyEvansIndex" min="0" max="1" step="0.001" placeholder="0.300">
+          </div>
+          <div class="measurement-grid">
+            <div class="form-group">
+              <label for="frontalHornWidth">Frontal Horn Width (mm)</label>
+              <input type="number" id="frontalHornWidth" min="0" step="0.1" placeholder="e.g. 36.0">
+            </div>
+            <div class="form-group">
+              <label for="innerSkullWidth">Inner Skull Width (mm)</label>
+              <input type="number" id="innerSkullWidth" min="0" step="0.1" placeholder="e.g. 120.0">
+            </div>
+          </div>
+          <button class="btn secondary" id="saveEvansMeasurement" type="button">Save Evans Measurement</button>
+          <div id="evansStatus" class="engine-status">No Evans index saved.</div>
+        </div>
+        <div class="info-group desh-group">
+          <h4>DESH Pattern</h4>
+          <div class="form-group">
+            <label for="deshPatternToggle">DESH pattern present?</label>
+            <select id="deshPatternToggle">
+              <option value="">-- Select --</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="evansIndexNumeric">Evans Index (numeric)</label>
+            <input type="number" id="evansIndexNumeric" min="0" max="1" step="0.001" placeholder="0.300">
+          </div>
+          <button class="btn secondary" id="saveDeshAndEvans" type="button">Save DESH / Evans</button>
+          <div id="deshStatus" class="engine-status">No DESH data saved.</div>
+        </div>
+        <div class="info-group slicer-group">
+          <h4>Local Slicer Engine</h4>
+          <div class="form-group">
+            <label for="slicerServiceUrl">Service URL</label>
+            <input type="text" id="slicerServiceUrl" value="http://127.0.0.1:8787">
+          </div>
+          <div class="form-group">
+            <label for="slicerDicomDir">DICOM Folder Path</label>
+            <input type="text" id="slicerDicomDir" placeholder="scans/dad/2026-05-01-mri">
+          </div>
+          <div class="slicer-actions">
+            <button class="btn secondary" id="checkSlicerHealth" type="button">Check Service</button>
+            <button class="btn" id="runSlicerAnalysis" type="button">Run Slicer Analysis</button>
+          </div>
+          <div id="slicerStatus" class="engine-status">Service not checked.</div>
+          <pre id="slicerMetrics" class="metrics-output"></pre>
+        </div>
       </div>
 
       <div class="tab-content" id="reportTab">
