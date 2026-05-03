@@ -6,6 +6,26 @@ function getBaseUrl(slicerServiceUrl) {
   return slicerServiceUrl || (typeof window !== "undefined" && window.SLICER_SERVICE_URL) || DEFAULT_BASE_URL;
 }
 
+function isLocalhostHttp(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname.startsWith("127."));
+  } catch {
+    return false;
+  }
+}
+
+function checkSecureContextBlock(baseUrl) {
+  if (typeof window !== "undefined" && window.isSecureContext && isLocalhostHttp(baseUrl)) {
+    throw new Error(
+      "Browser security (mixed content) blocks HTTPS pages from accessing HTTP localhost. " +
+      "To use the Local Slicer Engine you can: (1) run the frontend locally (npm run dev), " +
+      "(2) use an HTTPS tunnel to expose localhost (Cloudflare Tunnel / ngrok), or " +
+      "(3) deploy the Slicer backend on a VPS with HTTPS."
+    );
+  }
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -43,6 +63,7 @@ function parseErrorBody(text) {
 
 export async function analyzeDicomWithSlicer({ dicomDir, slicerServiceUrl }) {
   const baseUrl = getBaseUrl(slicerServiceUrl);
+  checkSecureContextBlock(baseUrl);
   let response;
   try {
     response = await safeFetch(`${baseUrl}/analyze`, {
@@ -71,6 +92,7 @@ export async function analyzeDicomWithSlicer({ dicomDir, slicerServiceUrl }) {
 
 export async function checkSlicerHealth({ slicerServiceUrl } = {}) {
   const baseUrl = getBaseUrl(slicerServiceUrl);
+  checkSecureContextBlock(baseUrl);
   let response;
   try {
     response = await safeFetch(`${baseUrl}/health`, {}, 0);
@@ -92,6 +114,7 @@ export async function checkSlicerHealth({ slicerServiceUrl } = {}) {
 
 export async function uploadZipToSlicer({ zipBlob, slicerServiceUrl }) {
   const baseUrl = getBaseUrl(slicerServiceUrl);
+  checkSecureContextBlock(baseUrl);
   let response;
   try {
     response = await safeFetch(`${baseUrl}/upload-and-analyze`, {

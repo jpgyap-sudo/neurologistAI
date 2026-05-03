@@ -202,41 +202,24 @@
       </div>
 
       <div class="tab-content" id="reportTab">
-        <div class="form-group">
-          <label for="patientId">Patient ID</label>
-          <input type="text" id="patientId" placeholder="Optional">
-        </div>
-        <div class="form-group">
-          <label for="studyDate">Study Date</label>
-          <input type="date" id="studyDate">
-        </div>
-        <div class="form-group">
-          <label for="bodyPart">Body Part</label>
-          <select id="bodyPart">
-            <option>Head / Brain</option>
-            <option>Chest / Thorax</option>
-            <option>Abdomen</option>
-            <option>Pelvis</option>
-            <option>Spine</option>
-            <option>Extremity</option>
-            <option>Other</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label for="clinicalHistory">Clinical History / Indication</label>
-          <textarea id="clinicalHistory" rows="2" placeholder="Reason for scan..."></textarea>
-        </div>
-        <div class="form-group">
-          <label for="findings">Findings</label>
-          <textarea id="findings" rows="4" placeholder="Describe observations..."></textarea>
-        </div>
-        <div class="form-group">
-          <label for="impression">Impression</label>
-          <textarea id="impression" rows="3" placeholder="Summary impression..."></textarea>
-        </div>
-        <div class="form-group">
-          <label for="recommendations">Recommendations</label>
-          <textarea id="recommendations" rows="2" placeholder="Follow-up or further studies..."></textarea>
+        <div class="info-group">
+          <h4>Report Fields</h4>
+          <div class="form-group">
+            <label for="reportClinical">Clinical Summary</label>
+            <textarea id="reportClinical" rows="3" placeholder="Brief clinical context..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="reportFindings">Findings</label>
+            <textarea id="reportFindings" rows="5" placeholder="Imaging findings..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="reportImpression">Impression</label>
+            <textarea id="reportImpression" rows="3" placeholder="Overall impression..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="reportRecommendations">Recommendations</label>
+            <textarea id="reportRecommendations" rows="3" placeholder="Suggested next steps..."></textarea>
+          </div>
         </div>
         <button class="btn" id="generateReport">Generate Report</button>
       </div>
@@ -268,6 +251,6 @@
   <script src="js/knowledge-base.js"></script>
   <script type="module" src="js/chatClient.js"></script>
   <script type="module" src="js/slicerClient.js"></script>
-  <script src="js/app.js"></script>
+  <script defer src="js/app.js"></script>
 </body>
 </html>

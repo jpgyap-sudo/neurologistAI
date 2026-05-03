@@ -725,30 +725,17 @@
   );
 
   const checkLocalSlicerHealth = async (slicerServiceUrl) => {
-    if (typeof window.checkSlicerHealth === 'function') {
-      return window.checkSlicerHealth({ slicerServiceUrl });
+    if (typeof window.checkSlicerHealth !== 'function') {
+      throw new Error('Slicer client not loaded. Please refresh the page.');
     }
-    const response = await fetch(`${slicerServiceUrl}/health`);
-    if (!response.ok) {
-      throw new Error(`Slicer health HTTP ${response.status}`);
-    }
-    return response.json();
+    return window.checkSlicerHealth({ slicerServiceUrl });
   };
 
   const analyzeLocalDicomWithSlicer = async ({ dicomDir, slicerServiceUrl }) => {
-    if (typeof window.analyzeDicomWithSlicer === 'function') {
-      return window.analyzeDicomWithSlicer({ dicomDir, slicerServiceUrl });
+    if (typeof window.analyzeDicomWithSlicer !== 'function') {
+      throw new Error('Slicer client not loaded. Please refresh the page.');
     }
-    const response = await fetch(`${slicerServiceUrl}/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dicom_dir: dicomDir })
-    });
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.detail || err.details || err.error || `Slicer HTTP ${response.status}`);
-    }
-    return response.json();
+    return window.analyzeDicomWithSlicer({ dicomDir, slicerServiceUrl });
   };
 
   const generateScanAwareResponse = (userMessage) => {
