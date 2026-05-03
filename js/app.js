@@ -558,17 +558,28 @@
     if (!metrics) return `Local Slicer analysis: not run.\n${evansSummary}`;
     const hydro = metrics.hydrocephalus_metrics || {};
     const callosal = metrics.callosal_angle_workflow || {};
-    return [
+    const interpretation = metrics.interpretation || {};
+    const lines = [
       evansSummary,
       `Local Slicer analysis status: ${state.slicerResult.status || metrics.status || 'unknown'}`,
       `Output: ${state.slicerResult.output_dir || metrics.output_dir || 'not available'}`,
+      `Inferred modality: ${hydro.modality_inferred || 'unknown'}`,
       `Automated Evans index candidate: ${hydro.evans_index ?? 'not available'}`,
       `Evans >= 0.30: ${hydro.evans_index_supports_ventriculomegaly ?? 'not available'}`,
+      `Frontal horn width (auto): ${hydro.frontal_horn_width_mm ?? 'n/a'} mm`,
+      `Inner skull width (auto): ${hydro.inner_skull_width_mm ?? 'n/a'} mm`,
       `Ventricular asymmetry ratio: ${hydro.ventricular_asymmetry_ratio ?? 'not available'}`,
+      `Estimated ventricular volume: ${hydro.ventricular_volume_estimate_ml ?? 'not available'} mL`,
       `Hydrocephalus metric confidence: ${hydro.confidence || hydro.status || 'not available'}`,
       `Callosal angle workflow: ${callosal.status || 'not available'}`,
-      `Coronal package: ${callosal.coronal_reconstruction_package || 'not available'}`
-    ].join('\n');
+      `Coronal package: ${callosal.coronal_reconstruction_package || 'not available'}`,
+    ];
+    if (interpretation.evans_index_comment) lines.push(`Interpretation: ${interpretation.evans_index_comment}`);
+    if (interpretation.asymmetry_comment) lines.push(`Asymmetry note: ${interpretation.asymmetry_comment}`);
+    if (Array.isArray(hydro.diagnostic_log) && hydro.diagnostic_log.length > 0) {
+      lines.push(`Diagnostic log entries: ${hydro.diagnostic_log.length} (see metrics.json for details)`);
+    }
+    return lines.join('\n');
   };
 
   const getEvansCategory = (value) => {
@@ -675,6 +686,7 @@
     const metrics = payload?.metrics || payload;
     const hydro = metrics?.hydrocephalus_metrics || {};
     const callosal = metrics?.callosal_angle_workflow || {};
+    const interpretation = metrics?.interpretation || {};
     const statusText = payload?.status || metrics?.status || 'unknown';
 
     status.className = `engine-status ${statusText === 'completed' || statusText === 'loaded_successfully' ? 'ok' : ''}`;
@@ -682,13 +694,20 @@
     output.textContent = JSON.stringify({
       job_id: payload?.job_id,
       output_dir: payload?.output_dir || metrics?.output_dir,
+      inferred_modality: hydro.modality_inferred,
       evans_index: hydro.evans_index,
       evans_index_supports_ventriculomegaly: hydro.evans_index_supports_ventriculomegaly,
+      frontal_horn_width_mm: hydro.frontal_horn_width_mm,
+      inner_skull_width_mm: hydro.inner_skull_width_mm,
       ventricular_asymmetry_ratio: hydro.ventricular_asymmetry_ratio,
+      ventricular_volume_estimate_ml: hydro.ventricular_volume_estimate_ml,
       hydrocephalus_metric_confidence: hydro.confidence || hydro.status,
       callosal_angle_workflow: callosal.status,
       coronal_reconstruction_package: callosal.coronal_reconstruction_package,
-      limitations: hydro.limitations || []
+      interpretation_comment: interpretation.evans_index_comment,
+      asymmetry_comment: interpretation.asymmetry_comment,
+      limitations: hydro.limitations || [],
+      diagnostic_log: hydro.diagnostic_log || []
     }, null, 2);
   };
 
@@ -803,12 +822,13 @@
   };
 
   const AGENT_META = {
-    radiology: { icon: '🩻', label: 'Radiology Agent' },
-    neurology: { icon: '🧠', label: 'Neurology Agent' },
-    medication: { icon: '💊', label: 'Medication Agent' },
-    rehab: { icon: '🏃', label: 'Rehab Agent' },
-    research: { icon: '📚', label: 'Research Agent' },
-    nph_ex_vacuo: { icon: '⚖️', label: 'NPH vs Ex Vacuo Agent' }
+    radiology: { icon: '[R]', label: 'Radiology Agent' },
+    neurology: { icon: '[N]', label: 'Neurology Agent' },
+    medication: { icon: '[M]', label: 'Medication Agent' },
+    rehab: { icon: '[Rehab]', label: 'Rehab Agent' },
+    research: { icon: '[Research]', label: 'Research Agent' },
+    nph_ex_vacuo: { icon: '[NPH]', label: 'NPH vs Ex Vacuo Agent' },
+    mri_brain: { icon: '[MRI]', label: 'MRI Brain Specialist' }
   };
 
   const appendAiResponse = (data) => {
@@ -819,7 +839,7 @@
     if (data.requiresHumanReview === true) {
       const warning = document.createElement('div');
       warning.className = 'human-review-warning';
-      warning.textContent = '⚠️ This response has low confidence and requires human clinician review before any action is taken.';
+      warning.textContent = 'Warning: This response has low confidence and requires human clinician review before any action is taken.';
       wrapper.appendChild(warning);
     }
 
@@ -845,8 +865,8 @@
       confBadge.className = `confidence-${data.confidence}`;
       const confLabels = {
         high: 'High confidence',
-        moderate: 'Moderate confidence — review recommended',
-        low: 'Low confidence — human review required'
+        moderate: 'Moderate confidence - review recommended',
+        low: 'Low confidence - human review required'
       };
       confBadge.textContent = confLabels[data.confidence] || data.confidence;
       meta.appendChild(confBadge);

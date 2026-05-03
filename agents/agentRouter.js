@@ -52,6 +52,15 @@ ${ctx}`,
 Role: General Clinical Project Assistant.
 Help organize data, reports, workflows, GitHub repo tasks, and technical integration.
 Context:
+${ctx}`,
+
+    mri_brain: `${BASE_SAFETY}
+Role: MRI Brain Specialist.
+Focus on MRI-derived ventricular metrics, sequence-specific contrast, and NPH vs ex-vacuo interpretation on MRI.
+Assess: Evans index, callosal angle, DESH pattern, ventricular symmetry, transependymal FLAIR signal, preprocessing status, quality flags, and serial MRI change.
+Do not overstate. Say when image quality, sequence choice, or preprocessing limits interpretation.
+Output sections: Imaging Findings, Quantitative Metrics, Pattern Analysis, Impression, Data needed next.
+Context:
 ${ctx}`
   };
 

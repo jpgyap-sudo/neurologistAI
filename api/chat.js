@@ -14,7 +14,7 @@ const ChatRequestSchema = z.object({
     content: z.string()
   })).optional(),
   message: z.string().optional(),
-  agent: z.enum(["auto", "radiology", "neurology", "rehab", "medication", "general", "research", "nph_ex_vacuo"]).optional().default("auto"),
+  agent: z.enum(["auto", "radiology", "neurology", "rehab", "medication", "general", "research", "nph_ex_vacuo", "mri_brain"]).optional().default("auto"),
   context: z.object({
     imagingMetrics: z.any().optional(),
     lpResults: z.any().optional(),
@@ -37,41 +37,39 @@ const AGENT_KEYWORDS = {
   nph_ex_vacuo: ['nph vs ex vacuo', 'ex vacuo', 'shunt responsive', 'csf drainage response', 'tap test', 'hydrocephalus ex vacuo differentiation', 'normal pressure hydrocephalus vs atrophy'],
   medication: ['drug', 'med', 'amantadine', 'baclofen', 'interaction', 'prescription', 'pharmacy', 'pharmacology', 'dose', 'dosage', 'taper', 'withdrawal', 'side effect', 'adverse', 'contraindication', 'sedative', 'hypnotic', 'antipsychotic', 'anticholinergic', 'antiepileptic', 'antihypertensive', 'neurostimulant', 'methylphenidate', 'modafinil', 'tizanidine', 'antibiotic', 'vancomycin', 'phenytoin', 'levetiracetam', 'mannitol', 'hypertonic', 'aspirin', 'clopidogrel', 'warfarin', 'heparin', ' doac ', 'anticoagulant', 'thrombolytic', 'rtpa', 'alteplase'],
   rehab: ['therapy', 'rehab', 'pt', 'ot', 'speech', 'swallow', 'mobility', 'physical therapy', 'occupational therapy', 'physiotherapy', 'speech therapy', 'slt', 'splint', 'brace', 'walker', 'wheelchair', 'gait', 'balance', 'transfer', 'bowel', 'bladder', 'spasticity', 'contracture', 'pressure sore', 'bedsore', 'decubitus', 'learned non-use', 'constraint induced', 'cims', 'bobath', 'ndt', 'functional electrical stimulation', 'fes', 'botulinum', 'botox', 'tone', 'rom', 'prom', 'arom', 'mrc', 'fac', 'fm ', 'fugl-meyer', 'barthel', 'mrs', 'rankin'],
-  research: ['study', 'evidence', 'paper', 'pubmed', 'trial', 'guideline', 'systematic review', 'meta-analysis', 'cohort', 'case series', 'case report', 'randomized', 'rct', 'clinical trial', 'phase ', 'protocol', 'inclusion', 'exclusion', 'endpoint', 'outcome', 'biomarker', 'efficacy', 'effectiveness', 'recommendation', 'consensus', 'society', 'aans', 'cns', 'aan', 'nice', 'sign', 'asa', 'esh', 'ich e9', 'ich e6', 'gcp', 'prisma', 'cochrane', 'medline', 'scopus', 'embase', 'cinahl', 'literature', 'bibliography', 'citation', 'reference']
+  research: ['study', 'evidence', 'paper', 'pubmed', 'trial', 'guideline', 'systematic review', 'meta-analysis', 'cohort', 'case series', 'case report', 'randomized', 'rct', 'clinical trial', 'phase ', 'protocol', 'inclusion', 'exclusion', 'endpoint', 'outcome', 'biomarker', 'efficacy', 'effectiveness', 'recommendation', 'consensus', 'society', 'aans', 'cns', 'aan', 'nice', 'sign', 'asa', 'esh', 'ich e9', 'ich e6', 'gcp', 'prisma', 'cochrane', 'medline', 'scopus', 'embase', 'cinahl', 'literature', 'bibliography', 'citation', 'reference'],
+  mri_brain: ['mri brain', 'brain mri', 'mr brain', 'brain mr', 'mri specialist', 'mri neuroradiology', 'mri brain evans', 'mri desh', 'mri callosal', 'mri ventriculomegaly', 'mri nph', 'mri hydrocephalus', 'mri sequence', 'mri quality', 'mri artifact', 'mri flair', 'mri t1', 'mri t2', 'mri transependymal']
 };
 
-function detectAgent(messages) {
-  const last = messages[messages.length - 1]?.content?.toLowerCase() || "";
-  let bestAgent = 'neurology';
-  let bestScore = 0;
-
-  for (const [agent, keywords] of Object.entries(AGENT_KEYWORDS)) {
-    let score = 0;
-    for (const kw of keywords) {
-      if (last.includes(kw.toLowerCase())) {
-        score += 1;
-      }
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      bestAgent = agent;
-    }
-  }
-
-  return bestAgent;
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function classifyAgent(message) {
-  const lower = message.toLowerCase();
+function keywordMatches(text, keyword) {
+  const compact = String(keyword).trim().toLowerCase();
+  if (!compact) return false;
+
+  const escaped = escapeRegex(compact).replace(/\s+/g, '\\s+');
+  if (/^[a-z0-9]+(?:\s+[a-z0-9]+)*$/.test(compact)) {
+    return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+  }
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(text);
+}
+
+function scoreAgentText(message) {
+  const lower = String(message || '').toLowerCase();
   let bestAgent = 'neurology';
   let bestScore = 0;
 
   for (const [agent, keywords] of Object.entries(AGENT_KEYWORDS)) {
     let score = 0;
     for (const kw of keywords) {
-      if (lower.includes(kw.toLowerCase())) {
+      if (keywordMatches(lower, kw)) {
         score += 1;
       }
+    }
+    if (agent === 'mri_brain' && /\b(?:mri|mr)\b/i.test(lower) && /\b(?:brain|ventric|hydrocephalus|nph|desh|evans|callosal|flair|t1|t2)\b/i.test(lower)) {
+      score += 2;
     }
     if (score > bestScore) {
       bestScore = score;
@@ -82,13 +80,23 @@ function classifyAgent(message) {
   return { agent: bestAgent, overlapScore: bestScore };
 }
 
+function detectAgent(messages) {
+  const last = messages[messages.length - 1]?.content || "";
+  return scoreAgentText(last).agent;
+}
+
+function classifyAgent(message) {
+  return scoreAgentText(message);
+}
+
 const AGENT_FILE_MAP = {
   radiology: 'radiology_agent.md',
   neurology: 'neurology_agent.md',
   medication: 'medication_review_agent.md',
   rehab: 'rehab_agent.md',
   research: 'research_librarian_agent.md',
-  nph_ex_vacuo: 'nph_ex_vacuo_agent.md'
+  nph_ex_vacuo: 'nph_ex_vacuo_agent.md',
+  mri_brain: 'mri_brain_agent.md'
 };
 
 function loadAgentPrompt(agent) {
@@ -154,6 +162,8 @@ function buildFallbackAnswer({ message, scanContext, localMatches, webResult }) 
 
   if (webResult?.sources?.length) {
     sections.push(`Web counter-check sources:\n${webResult.sources.map(source => `- ${source.title} (${source.journal || 'journal not listed'}, ${source.published || 'date not listed'}) ${source.url}`).join('\n')}`);
+  } else if (webResult?.error) {
+    sections.push(`Web counter-check sources: unavailable (${webResult.error}).`);
   } else if (webResult) {
     sections.push('Web counter-check sources: no PubMed results found for this query.');
   }
@@ -268,7 +278,20 @@ module.exports = async function handler(req, res) {
     const { agent: classifiedAgent, overlapScore } = classifyAgent(message);
     const localMatches = searchKnowledge(`${message}\n${scanContext}`, 8);
     const shouldWebCheck = parsed.counterCheck !== false && wantsWebCheck(message);
-    const webResult = shouldWebCheck ? await webCounterCheck(message, 5) : null;
+    let webResult = null;
+    if (shouldWebCheck) {
+      try {
+        webResult = await webCounterCheck(message, 5);
+      } catch (webError) {
+        console.warn('[chat] Web counter-check unavailable:', webError.message);
+        webResult = {
+          query: message,
+          searched_at: new Date().toISOString(),
+          sources: [],
+          error: webError.message
+        };
+      }
+    }
 
     let finalConfidence = computeConfidence({ agent: selectedAgent, overlapScore, localMatches, webResult });
     let finalRequiresHumanReview = finalConfidence === 'low';
@@ -329,6 +352,7 @@ module.exports = async function handler(req, res) {
         score: match.score
       })),
       web_sources: webResult?.sources || [],
+      web_error: webResult?.error || null,
       model_used: provider ? provider.label : 'local-fallback',
       validation
     });

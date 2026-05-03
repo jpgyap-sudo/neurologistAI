@@ -4,8 +4,9 @@
 Run with:
 Slicer --no-main-window --python-script analyze_slicer.py -- <input_dicom_dir> <output_dir>
 
-This first version loads a DICOM series and exports technical metadata.
-It intentionally does not diagnose. Advanced segmentation modules can be added later.
+This version loads a DICOM series, selects the best axial brain series,
+and computes experimental hydrocephalus metrics including Evans index,
+ventricular volume estimates, and callosal angle workflow.
 """
 
 import os
@@ -108,6 +109,379 @@ def connected_components(mask, max_components=16):
     return components[:max_components]
 
 
+def detect_modality(volume_node):
+    """Infer modality from node name, DICOM metadata, and intensity range heuristics."""
+    name = (volume_node.GetName() or "").lower()
+    modality_hint = "unknown"
+    if any(t in name for t in ("ct", "ct head", "head ct", "computed tomography")):
+        modality_hint = "ct"
+    elif any(t in name for t in ("mr", "mri", "t1", "t2", "flair", "tirm", "dark-fluid")):
+        modality_hint = "mri"
+
+    # Fallback: use intensity range heuristics on the volume
+    try:
+        arr = slicer.util.arrayFromVolume(volume_node)
+        if arr is not None and arr.size > 0:
+            finite = arr[np.isfinite(arr)]
+            if finite.size > 0:
+                vmin = float(finite.min())
+                vmax = float(finite.max())
+                # CT typically has Hounsfield units: air ~ -1000, bone > 500
+                if vmin < -500 and vmax > 500:
+                    modality_hint = "ct"
+                elif -500 <= vmin and vmax > 500:
+                    # Could be contrast CT or MRI with high values; prefer name hint
+                    if modality_hint == "unknown":
+                        modality_hint = "mri" if vmax > 2000 else "ct"
+                elif modality_hint == "unknown":
+                    modality_hint = "mri"
+    except Exception:
+        pass
+    return modality_hint
+
+
+def refine_modality_from_dicom(volume_node, db, series_summary):
+    """Try to read Modality (0008,0060) from DICOM database files."""
+    try:
+        uids = volume_node.GetAttribute("DICOM.instanceUIDs")
+        if uids:
+            first_uid = uids.split()[0]
+            for series in series_summary:
+                files = db.filesForSeries(series["series_uid"])
+                for f in files:
+                    if first_uid in f:
+                        try:
+                            import pydicom
+                            ds = pydicom.dcmread(f, stop_before_pixels=True)
+                            mod = (ds.get("Modality") or "").lower()
+                            if mod in ("ct", "mr", "mri"):
+                                return "ct" if mod == "ct" else "mri"
+                        except Exception:
+                            pass
+                        break
+    except Exception:
+        pass
+    return None
+
+
+def preprocess_mri_volume(volume_node):
+    """
+    Lightweight MRI preprocessing: per-slice robust percentile normalization.
+    Reduces bias-field-like intensity variation without requiring N4ITK.
+    """
+    if np is None:
+        return {"status": "skipped", "reason": "numpy unavailable"}
+    arr = slicer.util.arrayFromVolume(volume_node)
+    if arr is None or arr.ndim != 3:
+        return {"status": "skipped", "reason": "volume is not 3D"}
+    z_count, y_count, x_count = arr.shape
+    out = np.empty_like(arr, dtype=np.float32)
+    for z in range(z_count):
+        sl = arr[z].astype(np.float32)
+        finite = sl[np.isfinite(sl)]
+        if finite.size < 100:
+            out[z] = sl
+            continue
+        p2, p98 = np.percentile(finite, [2, 98])
+        if p98 <= p2:
+            out[z] = sl
+            continue
+        norm = (sl - p2) / (p98 - p2)
+        norm = np.clip(norm, 0.0, 1.0)
+        out[z] = norm * (p98 - p2) + p2
+    try:
+        slicer.util.updateVolumeFromArray(volume_node, out)
+        return {"status": "normalized", "method": "per_slice_percentile_normalization"}
+    except Exception as exc:
+        try:
+            new_node = slicer.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLScalarVolumeNode",
+                volume_node.GetName() + "_preprocessed"
+            )
+            slicer.util.updateVolumeFromArray(new_node, out)
+            new_node.SetSpacing(volume_node.GetSpacing())
+            new_node.SetOrigin(volume_node.GetOrigin())
+            return {"status": "normalized_new_node", "method": "per_slice_percentile_normalization", "new_node_name": new_node.GetName()}
+        except Exception as e2:
+            return {"status": "failed", "reason": f"updateVolumeFromArray failed: {exc}; fallback failed: {e2}"}
+
+
+def mri_quality_check(volume_node):
+    """
+    Heuristic MRI quality assessment using slice-level statistics.
+    Detects motion/ghosting proxies and signal dropout.
+    """
+    if np is None:
+        return {"status": "not_available", "reason": "numpy unavailable"}
+    arr = slicer.util.arrayFromVolume(volume_node)
+    if arr is None or arr.ndim != 3:
+        return {"status": "not_available", "reason": "volume is not 3D"}
+    z_count, y_count, x_count = arr.shape
+    slice_scores = []
+    for z in range(z_count):
+        sl = arr[z].astype(float)
+        finite = sl[np.isfinite(sl)]
+        if finite.size < 100:
+            continue
+        mean = float(np.mean(finite))
+        std = float(np.std(finite))
+        cv = std / mean if mean != 0 else 0.0
+        p01, p99 = np.percentile(finite, [1, 99])
+        range_val = float(p99 - p01)
+        hist, _ = np.histogram(finite, bins=64, range=(float(p01), float(p99)))
+        hist = hist[hist > 0]
+        entropy = 0.0
+        if hist.sum() > 0:
+            prob = hist.astype(float) / hist.sum()
+            entropy = float(-np.sum(prob * np.log(prob)))
+        slice_scores.append({
+            "slice": z,
+            "cv": round(cv, 4),
+            "range": round(range_val, 2),
+            "entropy": round(entropy, 3),
+        })
+    if not slice_scores:
+        return {"status": "not_available", "reason": "no evaluable slices"}
+    cvs = np.array([s["cv"] for s in slice_scores])
+    ranges = np.array([s["range"] for s in slice_scores])
+    entropies = np.array([s["entropy"] for s in slice_scores])
+    mean_cv = float(np.mean(cvs))
+    std_cv = float(np.std(cvs))
+    outlier_slices = [s["slice"] for s in slice_scores if abs(s["cv"] - mean_cv) > 2.5 * std_cv]
+    issues = []
+    if len(outlier_slices) > z_count * 0.15:
+        issues.append("Potential motion or ghosting artifacts in >15% of slices (CV outliers).")
+    if np.mean(ranges) > 0 and np.std(ranges) / np.mean(ranges) > 0.30:
+        issues.append("Large inter-slice intensity variation suggests instability.")
+    if float(np.mean(entropies)) < 2.0:
+        issues.append("Low entropy may indicate signal dropout or poor contrast.")
+    return {
+        "status": "checked",
+        "mean_cv": round(mean_cv, 3),
+        "std_cv": round(std_cv, 3),
+        "outlier_slice_count": len(outlier_slices),
+        "total_slices": z_count,
+        "issues": issues,
+        "pass": len(issues) == 0,
+    }
+
+
+def compute_skull_width_ct(image, sx):
+    """For CT: use bone threshold to find inner table width robustly."""
+    bone_mask = image > 100  # HU threshold for bone
+    bone_mask = largest_component(bone_mask)
+    ys, xs = np.where(bone_mask)
+    if xs.size < 50:
+        return None
+    # Use the widest horizontal span of the bone mask as a proxy for inner skull diameter
+    # This is a rough estimate; we refine by looking for the calvarial ring
+    leftmost = xs.min()
+    rightmost = xs.max()
+    width_mm = (rightmost - leftmost + 1) * sx
+    # Sanity check
+    if width_mm < 80 or width_mm > 220:
+        return None
+    return width_mm, leftmost, rightmost
+
+
+def compute_skull_width_generic(image, sx):
+    """Generic intensity-based body/skull width estimate."""
+    finite = image[np.isfinite(image)]
+    if finite.size < 100:
+        return None
+    p01, p99 = np.percentile(finite, [1, 99])
+    body_mask = (image > p01) & (image < p99)
+    body_mask = largest_component(body_mask)
+    ys, xs = np.where(body_mask)
+    if xs.size < 100:
+        return None
+    skull_width_mm = (xs.max() - xs.min() + 1) * sx
+    if skull_width_mm <= 0:
+        return None
+    return skull_width_mm, xs.min(), xs.max()
+
+
+def estimate_ventricles_ct(image, sx, sy, x_count, y_count):
+    """
+    CT-specific ventricle detection using Hounsfield unit thresholds.
+    CSF ~ 0-20 HU.  We allow a slightly wider window for partial volume.
+    """
+    central_y = (np.arange(y_count)[:, None] > int(y_count * 0.15)) & (np.arange(y_count)[:, None] < int(y_count * 0.85))
+    central_x = (np.arange(x_count)[None, :] > int(x_count * 0.10)) & (np.arange(x_count)[None, :] < int(x_count * 0.90))
+    central_mask = central_y & central_x
+
+    # Try multiple HU windows to be robust
+    thresholds = [
+        (0, 22),
+        (-5, 25),
+        (0, 30),
+        (-10, 20),
+        (-15, 15),
+    ]
+    all_candidates = []
+    for lo, hi in thresholds:
+        vent_mask = central_mask & (image >= lo) & (image <= hi)
+        # Remove tiny noise
+        comps = connected_components(vent_mask)
+        # Filter components by position and size
+        mid_x = x_count / 2.0
+        usable = []
+        for comp in comps:
+            cx = float(comp["xs"].mean())
+            cy = float(comp["ys"].mean())
+            area_mm2 = comp["area"] * sx * sy
+            width = int(comp["xs"].max() - comp["xs"].min() + 1)
+            height = int(comp["ys"].max() - comp["ys"].min() + 1)
+            if abs(cx - mid_x) > x_count * 0.40:
+                continue
+            if cy < y_count * 0.15 or cy > y_count * 0.80:
+                continue
+            if area_mm2 < 12:
+                continue
+            if width < 3 or height < 3:
+                continue
+            usable.append(comp)
+        left = [c for c in usable if c["xs"].mean() < mid_x]
+        right = [c for c in usable if c["xs"].mean() >= mid_x]
+        if left and right:
+            for lc in left[:6]:
+                for rc in right[:6]:
+                    left_cy = float(lc["ys"].mean())
+                    right_cy = float(rc["ys"].mean())
+                    if abs(left_cy - right_cy) > y_count * 0.12:
+                        continue
+                    left_area = lc["area"] * sx * sy
+                    right_area = rc["area"] * sx * sy
+                    total_area = left_area + right_area
+                    if total_area < 60:
+                        continue
+                    min_x = min(int(lc["xs"].min()), int(rc["xs"].min()))
+                    max_x = max(int(lc["xs"].max()), int(rc["xs"].max()))
+                    frontal_horn_width_mm = (max_x - min_x + 1) * sx
+                    all_candidates.append({
+                        "left": lc,
+                        "right": rc,
+                        "frontal_horn_width_mm": frontal_horn_width_mm,
+                        "total_area_mm2": total_area,
+                        "threshold": (lo, hi),
+                    })
+    if not all_candidates:
+        return None
+    # Pick candidate with largest total ventricular area
+    all_candidates.sort(key=lambda c: c["total_area_mm2"], reverse=True)
+    return all_candidates[0]
+
+
+def _filter_mri_components(components, sx, sy, x_count, y_count):
+    """Shared MRI component filtering with relaxed bounds."""
+    mid_x = x_count / 2.0
+    usable = []
+    for comp in components:
+        cx = float(comp["xs"].mean())
+        cy = float(comp["ys"].mean())
+        area_mm2 = comp["area"] * sx * sy
+        width = int(comp["xs"].max() - comp["xs"].min() + 1)
+        height = int(comp["ys"].max() - comp["ys"].min() + 1)
+        if abs(cx - mid_x) > x_count * 0.38:
+            continue
+        if cy < y_count * 0.18 or cy > y_count * 0.78:
+            continue
+        if area_mm2 < 12:
+            continue
+        if width < 4 or height < 4:
+            continue
+        usable.append(comp)
+    left = [c for c in usable if c["xs"].mean() < mid_x]
+    right = [c for c in usable if c["xs"].mean() >= mid_x]
+    return left, right
+
+
+def _pair_mri_candidates(left_components, right_components, sx, sy, y_count):
+    candidates = []
+    for left in left_components[:8]:
+        for right in right_components[:8]:
+            left_cy = float(left["ys"].mean())
+            right_cy = float(right["ys"].mean())
+            if abs(left_cy - right_cy) > y_count * 0.12:
+                continue
+            left_area = left["area"] * sx * sy
+            right_area = right["area"] * sx * sy
+            total_area = left_area + right_area
+            if total_area < 60:
+                continue
+            min_x = min(int(left["xs"].min()), int(right["xs"].min()))
+            max_x = max(int(left["xs"].max()), int(right["xs"].max()))
+            frontal_horn_width_mm = (max_x - min_x + 1) * sx
+            candidates.append({
+                "left": left,
+                "right": right,
+                "frontal_horn_width_mm": frontal_horn_width_mm,
+                "total_area_mm2": total_area,
+            })
+    return candidates
+
+
+def estimate_ventricles_mri(image, sx, sy, x_count, y_count, sequence_name):
+    """MRI ventricle detection using multiple intensity strategies."""
+    finite = image[np.isfinite(image)]
+    if finite.size < 100:
+        return None
+    percentiles = np.percentile(
+        finite,
+        [1, 5, 10, 15, 20, 30, 35, 40, 45, 50, 70, 80, 90, 95, 99, 99.5, 99.9],
+    )
+    p01, p05, p10, p15, p20, p30, p35, p40, p45, p50, p70, p80, p90, p95, p99, p995, p999 = percentiles
+
+    is_flair_like = any(term in sequence_name for term in ("flair", "tirm", "dark-fluid"))
+    is_t2_like = "t2" in sequence_name and not is_flair_like
+    is_t1_like = "t1" in sequence_name
+
+    central_y = (np.arange(y_count)[:, None] > int(y_count * 0.15)) & (np.arange(y_count)[:, None] < int(y_count * 0.85))
+    central_x = (np.arange(x_count)[None, :] > int(x_count * 0.10)) & (np.arange(x_count)[None, :] < int(x_count * 0.90))
+    central_mask = central_y & central_x
+
+    # Build a list of threshold strategies to try
+    strategies = []
+    if is_flair_like:
+        strategies.append(("flair_dark", p15, p45))
+        strategies.append(("flair_dark2", p20, p50))
+        strategies.append(("flair_dark3", p10, p40))
+    elif is_t2_like:
+        strategies.append(("t2_bright", p95, p995))
+        strategies.append(("t2_bright2", p90, p999))
+        strategies.append(("t2_bright3", p80, p99))
+    elif is_t1_like:
+        strategies.append(("t1_dark", p05, p40))
+        strategies.append(("t1_dark2", p01, p35))
+        strategies.append(("t1_dark3", p10, p50))
+    else:
+        # Unknown MRI sequence: try multiple plausible windows
+        strategies.append(("dark_a", p05, p40))
+        strategies.append(("dark_b", p10, p50))
+        strategies.append(("dark_c", p15, p45))
+        strategies.append(("bright_a", p90, p999))
+        strategies.append(("bright_b", p80, p99))
+        strategies.append(("mid", p30, p70))
+
+    all_candidates = []
+    for label, lo, hi in strategies:
+        if lo >= hi:
+            continue
+        vent_mask = central_mask & (image >= lo) & (image <= hi)
+        components = connected_components(vent_mask)
+        left, right = _filter_mri_components(components, sx, sy, x_count, y_count)
+        if left and right:
+            candidates = _pair_mri_candidates(left, right, sx, sy, y_count)
+            for c in candidates:
+                c["strategy"] = label
+            all_candidates.extend(candidates)
+
+    if not all_candidates:
+        return None
+    all_candidates.sort(key=lambda c: c["total_area_mm2"], reverse=True)
+    return all_candidates[0]
+
+
 def estimate_hydrocephalus_metrics(volume_node):
     if np is None:
         return {
@@ -127,15 +501,17 @@ def estimate_hydrocephalus_metrics(volume_node):
     spacing = volume_node.GetSpacing()
     sx = float(spacing[0]) if spacing else 1.0
     sy = float(spacing[1]) if spacing else 1.0
+    sz = float(spacing[2]) if spacing else 1.0
     z_count, y_count, x_count = volume.shape
     sequence_name = (volume_node.GetName() or "").lower()
-    is_flair_like = any(term in sequence_name for term in ("flair", "tirm", "dark-fluid"))
-    is_t2_like = "t2" in sequence_name and not is_flair_like
-    candidates = []
+    modality = detect_modality(volume_node)
 
-    z_start = max(1, int(z_count * 0.30))
-    z_end = max(2, int(z_count * 0.70))
-    slice_indexes = sorted(set(np.linspace(z_start, z_end - 1, num=min(16, max(1, z_end - z_start)), dtype=int).tolist()))
+    candidates = []
+    diagnostic_log = []
+
+    z_start = max(1, int(z_count * 0.25))
+    z_end = max(2, int(z_count * 0.75))
+    slice_indexes = sorted(set(np.linspace(z_start, z_end - 1, num=min(24, max(1, z_end - z_start)), dtype=int).tolist()))
 
     for z in slice_indexes:
         image = volume[z].astype(float)
@@ -143,108 +519,82 @@ def estimate_hydrocephalus_metrics(volume_node):
         if finite.size < 100:
             continue
 
-        p01, p05, p10, p15, p35, p45, p70, p90, p95, p995, p99 = np.percentile(
-            finite,
-            [1, 5, 10, 15, 35, 45, 70, 90, 95, 99.5, 99],
-        )
-        body_mask = (image > p01) & (image < p99)
-        body_mask = largest_component(body_mask)
-        by, bx = np.where(body_mask)
-        if bx.size < 100:
+        # Skull / intracranial diameter estimate
+        sw = None
+        if modality == "ct":
+            sw = compute_skull_width_ct(image, sx)
+        # Try generic for both MRI and CT fallback
+        if sw is None:
+            sw = compute_skull_width_generic(image, sx)
+        if sw is None:
+            # Last resort: use full image width minus small margins
+            ys, xs = np.where(image > np.percentile(finite, 2))
+            if xs.size > 50:
+                width_mm = (xs.max() - xs.min() + 1) * sx
+                if 80 <= width_mm <= 220:
+                    sw = (width_mm, int(xs.min()), int(xs.max()))
+        if sw is None:
+            diagnostic_log.append({"slice": int(z), "issue": "skull_width_unavailable"})
             continue
+        skull_width_mm, skull_left, skull_right = sw
 
-        skull_width_mm = (bx.max() - bx.min() + 1) * sx
-        if skull_width_mm <= 0:
-            continue
-
-        # This is intentionally a candidate measurement, not a diagnostic segmentation.
-        # MRI sequences invert CSF differently: FLAIR/dark-fluid makes CSF dark,
-        # while T2 makes CSF bright. CT and unknown sequences use a conservative
-        # dark-central candidate rule.
-        central_y = (np.arange(y_count)[:, None] > int(y_count * 0.25)) & (np.arange(y_count)[:, None] < int(y_count * 0.75))
-        central_x = (np.arange(x_count)[None, :] > int(x_count * 0.20)) & (np.arange(x_count)[None, :] < int(x_count * 0.80))
-        central_mask = body_mask & central_y & central_x
-        if is_flair_like:
-            vent_mask = central_mask & (image >= p15) & (image <= p45)
-        elif is_t2_like:
-            vent_mask = central_mask & (image >= p95) & (image <= p995)
+        # Try modality-specific ventricle estimation, but also cross-try if it fails
+        vent = None
+        if modality == "ct":
+            vent = estimate_ventricles_ct(image, sx, sy, x_count, y_count)
+            if vent is None:
+                vent = estimate_ventricles_mri(image, sx, sy, x_count, y_count, sequence_name)
         else:
-            dark_threshold = min(p35, p10 + (p70 - p10) * 0.35)
-            vent_mask = central_mask & (image >= p05) & (image <= dark_threshold)
-        components = connected_components(vent_mask)
-        if not components:
+            vent = estimate_ventricles_mri(image, sx, sy, x_count, y_count, sequence_name)
+            if vent is None:
+                vent = estimate_ventricles_ct(image, sx, sy, x_count, y_count)
+
+        if vent is None:
+            diagnostic_log.append({"slice": int(z), "issue": "no_ventricle_candidate"})
             continue
 
-        mid_x = x_count / 2.0
-        usable = []
-        for comp in components:
-            cx = float(comp["xs"].mean())
-            cy = float(comp["ys"].mean())
-            width = int(comp["xs"].max() - comp["xs"].min() + 1)
-            height = int(comp["ys"].max() - comp["ys"].min() + 1)
-            area_mm2 = comp["area"] * sx * sy
-            if abs(cx - mid_x) > x_count * 0.28:
-                continue
-            if cy < y_count * 0.25 or cy > y_count * 0.68:
-                continue
-            if area_mm2 < 20:
-                continue
-            if width < 5 or height < 5:
-                continue
-            usable.append(comp)
-
-        left_components = [c for c in usable if c["xs"].mean() < mid_x]
-        right_components = [c for c in usable if c["xs"].mean() >= mid_x]
-        if not left_components or not right_components:
+        frontal_horn_width_mm = vent["frontal_horn_width_mm"]
+        evans_index = frontal_horn_width_mm / skull_width_mm
+        if evans_index < 0.08 or evans_index > 0.65:
+            diagnostic_log.append({"slice": int(z), "issue": "evans_out_of_range", "evans": round(evans_index, 3)})
             continue
 
-        for left in left_components[:6]:
-            for right in right_components[:6]:
-                left_cy = float(left["ys"].mean())
-                right_cy = float(right["ys"].mean())
-                if abs(left_cy - right_cy) > y_count * 0.08:
-                    continue
+        left = vent["left"]
+        right = vent["right"]
+        left_area = left["area"] * sx * sy
+        right_area = right["area"] * sx * sy
+        smaller = min(left_area, right_area)
+        larger = max(left_area, right_area)
+        asymmetry_ratio = None if smaller <= 0 else larger / smaller
+        left_cy = float(left["ys"].mean())
+        right_cy = float(right["ys"].mean())
+        y_alignment_penalty = abs(left_cy - right_cy)
+        quality_score = vent["total_area_mm2"] - (y_alignment_penalty * sx * 5)
 
-                left_area = left["area"] * sx * sy
-                right_area = right["area"] * sx * sy
-                total_area = left_area + right_area
-                if total_area < 120:
-                    continue
-
-                min_x = min(int(left["xs"].min()), int(right["xs"].min()))
-                max_x = max(int(left["xs"].max()), int(right["xs"].max()))
-                frontal_horn_width_mm = (max_x - min_x + 1) * sx
-                evans_index = frontal_horn_width_mm / skull_width_mm
-                if evans_index < 0.15 or evans_index > 0.50:
-                    continue
-
-                smaller = min(left_area, right_area)
-                larger = max(left_area, right_area)
-                asymmetry_ratio = None if smaller <= 0 else larger / smaller
-                y_alignment_penalty = abs(left_cy - right_cy)
-                quality_score = total_area - (y_alignment_penalty * sx * 5)
-
-                candidates.append({
-                    "slice_index": int(z),
-                    "skull_width_mm": round(skull_width_mm, 2),
-                    "frontal_horn_width_mm": round(frontal_horn_width_mm, 2),
-                    "evans_index": round(evans_index, 3),
-                    "left_candidate_area_mm2": round(left_area, 2),
-                    "right_candidate_area_mm2": round(right_area, 2),
-                    "ventricular_asymmetry_ratio": round(asymmetry_ratio, 3) if asymmetry_ratio else None,
-                    "candidate_component_count": 2,
-                    "candidate_area": int(left["area"] + right["area"]),
-                    "quality_score": round(float(quality_score), 2),
-                })
+        candidates.append({
+            "slice_index": int(z),
+            "skull_width_mm": round(skull_width_mm, 2),
+            "frontal_horn_width_mm": round(frontal_horn_width_mm, 2),
+            "evans_index": round(evans_index, 3),
+            "left_candidate_area_mm2": round(left_area, 2),
+            "right_candidate_area_mm2": round(right_area, 2),
+            "ventricular_asymmetry_ratio": round(asymmetry_ratio, 3) if asymmetry_ratio else None,
+            "candidate_component_count": 2,
+            "candidate_area": int(left["area"] + right["area"]),
+            "quality_score": round(float(quality_score), 2),
+            "modality": modality,
+        })
 
     if not candidates:
         return {
             "method": "experimental_intensity_geometry",
             "status": "not_available",
+            "modality_inferred": modality,
             "limitations": [
-                "Could not identify reliable central low-intensity ventricular candidates.",
+                "Could not identify reliable central ventricular candidates.",
                 "Manual review or segmentation is required.",
             ],
+            "diagnostic_log": diagnostic_log[-30:],
         }
 
     candidates.sort(key=lambda c: c["quality_score"], reverse=True)
@@ -252,7 +602,7 @@ def estimate_hydrocephalus_metrics(volume_node):
     confidence = "low"
     limitations = [
         "Experimental candidate measurement only; not validated for diagnosis.",
-        "May fail on MRI sequences, hemorrhage, postoperative change, severe asymmetry, artifacts, or non-axial acquisitions.",
+        "May fail on poor quality scans, hemorrhage, postoperative change, severe asymmetry, artifacts, or non-axial acquisitions.",
         "Confirm landmarks and ventricular borders manually in 3D Slicer before clinical use.",
     ]
     if (
@@ -262,10 +612,54 @@ def estimate_hydrocephalus_metrics(volume_node):
     ):
         confidence = "moderate"
 
+    # Compute whole-volume ventricle volume estimate using the same thresholds as the best candidate
+    total_ventricular_voxels = 0
+    third_ventricle_proxy_slices = []
+    temporal_horn_proxy_slices = []
+    for z in range(z_count):
+        image = volume[z].astype(float)
+        finite = image[np.isfinite(image)]
+        if finite.size < 100:
+            continue
+        if modality == "ct":
+            vent_mask = (image >= -10) & (image <= 25)
+        else:
+            p01, p05, p10, p15, p20, p30, p35, p40, p45, p50, p70, p80, p90, p95, p99, p995, p999 = np.percentile(
+                finite,
+                [1, 5, 10, 15, 20, 30, 35, 40, 45, 50, 70, 80, 90, 95, 99, 99.5, 99.9],
+            )
+            is_flair_like = any(term in sequence_name for term in ("flair", "tirm", "dark-fluid"))
+            is_t2_like = "t2" in sequence_name and not is_flair_like
+            is_t1_like = "t1" in sequence_name
+            if is_flair_like:
+                vent_mask = (image >= p15) & (image <= p45)
+            elif is_t2_like:
+                vent_mask = (image >= p90) & (image <= p999)
+            elif is_t1_like:
+                vent_mask = (image >= p05) & (image <= p40)
+            else:
+                # Unknown MRI: combine dark and bright masks and pick largest plausible region
+                dark_mask = (image >= p05) & (image <= p40)
+                bright_mask = (image >= p90) & (image <= p999)
+                vent_mask = dark_mask | bright_mask
+        total_ventricular_voxels += int(np.count_nonzero(vent_mask))
+        # Simple proxies for third ventricle (midline thin structure) and temporal horns (lateral inferior)
+        mid_x = x_count // 2
+        midline_region = vent_mask[:, max(0, mid_x - 3):min(x_count, mid_x + 4)]
+        if midline_region.size > 0 and np.count_nonzero(midline_region) > 2:
+            third_ventricle_proxy_slices.append(int(z))
+        # Temporal horn proxy: lower lateral corners of ventricle mask
+        lower_half = vent_mask[y_count // 2:, :]
+        if np.count_nonzero(lower_half) > 5:
+            temporal_horn_proxy_slices.append(int(z))
+
+    ventricular_volume_ml = total_ventricular_voxels * sx * sy * sz / 1000.0
+
     return {
         "method": "experimental_intensity_geometry",
         "status": "candidate_generated",
         "confidence": confidence,
+        "modality_inferred": modality,
         "evans_index": best["evans_index"],
         "evans_index_supports_ventriculomegaly": best["evans_index"] >= 0.30,
         "frontal_horn_width_mm": best["frontal_horn_width_mm"],
@@ -275,7 +669,11 @@ def estimate_hydrocephalus_metrics(volume_node):
         "right_candidate_area_mm2": best["right_candidate_area_mm2"],
         "source_slice_index": best["slice_index"],
         "candidate_count": len(candidates),
+        "ventricular_volume_estimate_ml": round(ventricular_volume_ml, 2),
+        "third_ventricle_proxy_slice_count": len(third_ventricle_proxy_slices),
+        "temporal_horn_proxy_slice_count": len(temporal_horn_proxy_slices),
         "limitations": limitations,
+        "diagnostic_log": diagnostic_log[-20:],
     }
 
 
@@ -358,6 +756,12 @@ def volume_score(node):
         "t2_tse",
         "t1_tse",
         "tra",
+        "ct",
+        "head ct",
+        "ct head",
+        "brain",
+        "non-contrast",
+        "ncct",
     ]
     for term in preferred:
         if term in name:
@@ -367,6 +771,8 @@ def volume_score(node):
         score += 20000
     if "t2_tse" in name:
         score += 10000
+    if "ct" in name or "head" in name:
+        score += 15000
 
     return score
 
@@ -487,6 +893,25 @@ def main():
             fail(output_dir, "DICOM import succeeded, but no scalar volume could be loaded.")
 
         volume_node = loaded[0]
+
+        # Modality detection and MRI-specific pipeline
+        modality = detect_modality(volume_node)
+        dicom_modality = refine_modality_from_dicom(volume_node, db, series_summary)
+        if dicom_modality:
+            modality = dicom_modality
+        preprocessing_info = {"status": "none", "modality_inferred": modality}
+        quality_info = {"status": "none", "modality_inferred": modality}
+        if modality == "mri":
+            preprocessing_info = preprocess_mri_volume(volume_node)
+            if preprocessing_info.get("status") == "normalized_new_node":
+                new_name = preprocessing_info.get("new_node_name")
+                try:
+                    new_node = slicer.util.getNode(new_name)
+                    volume_node = new_node
+                except Exception:
+                    pass
+            quality_info = mri_quality_check(volume_node)
+
         spacing = volume_node.GetSpacing()
         image_data = volume_node.GetImageData()
         dimensions = image_data.GetDimensions() if image_data else (0, 0, 0)
@@ -496,6 +921,49 @@ def main():
         approximate_volume_ml = dimensions[0] * dimensions[1] * dimensions[2] * voxel_volume_mm3 / 1000.0
         hydrocephalus_metrics = estimate_hydrocephalus_metrics(volume_node)
         callosal_angle_workflow = build_callosal_angle_workflow(output_dir, volume_node)
+
+        # Build decision support interpretation
+        evans = hydrocephalus_metrics.get("evans_index")
+        asym = hydrocephalus_metrics.get("ventricular_asymmetry_ratio")
+        vent_vol = hydrocephalus_metrics.get("ventricular_volume_estimate_ml")
+        modality_from_metrics = hydrocephalus_metrics.get("modality_inferred", "unknown")
+        if modality == "unknown" and modality_from_metrics != "unknown":
+            modality = modality_from_metrics
+
+        interpretation = {
+            "evans_index_comment": None,
+            "ventriculomegaly_present": None,
+            "asymmetry_comment": None,
+            "volume_comment": None,
+            "suggested_next_steps": [],
+        }
+        if evans is not None:
+            if evans < 0.30:
+                interpretation["evans_index_comment"] = "Evans index <0.30 suggests no significant ventriculomegaly at the measured level."
+                interpretation["ventriculomegaly_present"] = False
+            elif evans < 0.40:
+                interpretation["evans_index_comment"] = "Evans index 0.30-0.39 indicates mild ventriculomegaly; correlate clinically."
+                interpretation["ventriculomegaly_present"] = True
+            else:
+                interpretation["evans_index_comment"] = "Evans index >=0.40 indicates significant ventriculomegaly. Does not distinguish NPH from ex-vacuo alone."
+                interpretation["ventriculomegaly_present"] = True
+
+        if asym is not None:
+            if asym >= 1.5:
+                interpretation["asymmetry_comment"] = f"Ventricular asymmetry ratio {asym} suggests notable asymmetry; consider structural volume loss or mass effect."
+            else:
+                interpretation["asymmetry_comment"] = f"Ventricular asymmetry ratio {asym} is relatively symmetric."
+
+        if vent_vol is not None:
+            interpretation["volume_comment"] = f"Estimated ventricular volume ~{vent_vol} mL (experimental)."
+
+        interpretation["suggested_next_steps"] = [
+            "1. Confirm true axial plane through frontal horns.",
+            "2. Review DESH signs: tight high-convexity sulci, enlarged Sylvian fissures.",
+            "3. Measure callosal angle on AC-PC aligned coronal plane at posterior commissure.",
+            "4. Compare with prior imaging for interval change.",
+            "5. Correlate with clinical triad (gait, cognition, urinary) and LP/ELD response.",
+        ]
 
         metrics = {
             "status": "loaded_successfully",
@@ -520,11 +988,13 @@ def main():
             },
             "hydrocephalus_metrics": hydrocephalus_metrics,
             "callosal_angle_workflow": callosal_angle_workflow,
+            "preprocessing": preprocessing_info,
+            "mri_quality": quality_info,
+            "interpretation": interpretation,
             "decision_support_inputs": {
-                "evans_index": hydrocephalus_metrics.get("evans_index"),
+                "evans_index": evans,
                 "asymmetric_ventricles": (
-                    hydrocephalus_metrics.get("ventricular_asymmetry_ratio") is not None
-                    and hydrocephalus_metrics.get("ventricular_asymmetry_ratio") >= 1.5
+                    asym is not None and asym >= 1.5
                 ),
                 "callosal_angle_degrees": None,
                 "lp_response": "enter separately from clinical LP log",
@@ -543,17 +1013,59 @@ def main():
             f.write(f"- Volume name: {volume_node.GetName()}\n")
             f.write(f"- Dimensions voxels: {dimensions}\n")
             f.write(f"- Spacing mm: {spacing}\n")
-            f.write(f"- Approximate full image volume: {round(approximate_volume_ml, 2)} mL\n\n")
+            f.write(f"- Approximate full image volume: {round(approximate_volume_ml, 2)} mL\n")
+            f.write(f"- Inferred modality: {modality}\n\n")
+
+            if modality == "mri":
+                f.write("## MRI Preprocessing\n")
+                f.write(f"- Status: {preprocessing_info.get('status')}\n")
+                if preprocessing_info.get('method'):
+                    f.write(f"- Method: {preprocessing_info.get('method')}\n")
+                if preprocessing_info.get('reason'):
+                    f.write(f"- Note: {preprocessing_info.get('reason')}\n")
+                f.write("\n")
+
+                f.write("## MRI Quality Check\n")
+                f.write(f"- Status: {quality_info.get('status')}\n")
+                if quality_info.get('pass') is not None:
+                    f.write(f"- Pass: {quality_info.get('pass')}\n")
+                if quality_info.get('issues'):
+                    for issue in quality_info.get('issues'):
+                        f.write(f"- Issue: {issue}\n")
+                else:
+                    f.write("- No major quality issues flagged.\n")
+                f.write("\n")
+
             f.write("## Clinical Interpretation Boundary\n")
             f.write("This report is not a diagnosis. Manual radiology/neurology review is required.\n\n")
+
             f.write("## Experimental Hydrocephalus Metrics\n")
-            f.write(f"- Evans index candidate: {hydrocephalus_metrics.get('evans_index', 'not available')}\n")
-            f.write(f"- Ventricular asymmetry candidate ratio: {hydrocephalus_metrics.get('ventricular_asymmetry_ratio', 'not available')}\n")
+            f.write(f"- Evans index candidate: {evans if evans is not None else 'not available'}\n")
+            f.write(f"- Ventricular asymmetry candidate ratio: {asym if asym is not None else 'not available'}\n")
             f.write(f"- Metric confidence: {hydrocephalus_metrics.get('confidence', 'not available')}\n")
+            f.write(f"- Estimated ventricular volume: {vent_vol if vent_vol is not None else 'not available'} mL\n")
+            f.write(f"- Source slice index: {hydrocephalus_metrics.get('source_slice_index', 'n/a')}\n")
             f.write("- These values require manual confirmation before clinical use.\n\n")
+
+            f.write("## Interpretation Support\n")
+            if interpretation["evans_index_comment"]:
+                f.write(f"- {interpretation['evans_index_comment']}\n")
+            if interpretation["asymmetry_comment"]:
+                f.write(f"- {interpretation['asymmetry_comment']}\n")
+            if interpretation["volume_comment"]:
+                f.write(f"- {interpretation['volume_comment']}\n")
+            f.write("\n")
+
+            f.write("## Suggested Next Steps\n")
+            for step in interpretation["suggested_next_steps"]:
+                f.write(f"- {step}\n")
+            f.write("\n")
+
             f.write("## Callosal Angle / Coronal Reconstruction Workflow\n")
-            f.write(f"- Coronal reconstruction package: {callosal_angle_workflow.get('coronal_reconstruction_package') or 'not saved'}\n")
+            pkg = callosal_angle_workflow.get('coronal_reconstruction_package')
+            f.write(f"- Coronal reconstruction package: {pkg or 'not saved'}\n")
             f.write("- Callosal angle requires manual AC-PC aligned coronal measurement at posterior commissure level.\n\n")
+
             f.write("## Suggested Manual Review Targets\n")
             f.write("- Ventricular symmetry/asymmetry\n")
             f.write("- Lesion-side ventricular expansion into encephalomalacic territory\n")
@@ -561,6 +1073,17 @@ def main():
             f.write("- DESH pattern elements\n")
             f.write("- Transependymal FLAIR signal if MRI FLAIR is available\n")
             f.write("- Comparison against prior CT/MRI for progression\n")
+
+            # Append decision tree guidance
+            f.write("\n## Decision Support Quick Reference\n")
+            f.write("| Finding | Favors NPH | Favors Ex Vacuo |\n")
+            f.write("|---------|------------|----------------|\n")
+            f.write("| Evans index | >=0.30 (non-specific) | Any value with lesion-matched asymmetry |\n")
+            f.write("| Callosal angle | <90 deg | >100 deg |\n")
+            f.write("| High-convexity sulci | Tight/effaced | Widened |\n")
+            f.write("| Sylvian fissures | Disproportionately enlarged | Proportionally enlarged |\n")
+            f.write("| LP/ELD response | Objective improvement | No improvement |\n")
+            f.write("| Prior large lesion | Absent | Present |\n\n")
 
         print("Analysis complete")
         print(metrics_path)

@@ -37,6 +37,14 @@ DEFAULT_SLICER_EXE = Path(r"C:\ProgramData\slicer.org\3D Slicer 5.10.0\Slicer.ex
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "outputs" / "slicer"
 DEFAULT_SLICER_SCRIPT = REPO_ROOT / "scripts" / "analyze_slicer.py"
 RUN_BAT = REPO_ROOT / "scripts" / "run_analysis.bat"
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost:3000,"
+    "http://127.0.0.1:3000,"
+    "http://localhost:3001,"
+    "http://127.0.0.1:3001,"
+    "https://neurologist-ai.vercel.app,"
+    "https://ctscan-analyzer.vercel.app"
+)
 
 
 class AnalyzeRequest(BaseModel):
@@ -111,18 +119,25 @@ def run_slicer_analysis(dicom_dir: str):
     metrics_path = output_dir / "metrics.json"
     metrics = None
     if metrics_path.exists():
-        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        try:
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception as parse_err:
+            metrics = {"status": "metrics_parse_error", "error": str(parse_err)}
+
+    status_text = "completed" if result.returncode == 0 else "failed"
+    if metrics is None or metrics.get("status") == "failed":
+        status_text = "failed" if metrics is None else "completed_with_warnings"
 
     return {
         "job_id": job_id,
-        "status": "completed" if result.returncode == 0 else "failed",
+        "status": status_text,
         "process_returncode": result.returncode,
         "output_dir": str(output_dir),
-        "metrics_path": str(metrics_path),
-        "report_path": str(output_dir / "report.md"),
+        "metrics_path": str(metrics_path) if metrics_path.exists() else None,
+        "report_path": str(output_dir / "report.md") if (output_dir / "report.md").exists() else None,
         "metrics": metrics,
-        "stdout": result.stdout[-4000:],
-        "stderr": result.stderr[-4000:],
+        "stdout": result.stdout[-8000:],
+        "stderr": result.stderr[-8000:],
     }
 
 
@@ -177,21 +192,46 @@ def extract_and_run(zip_bytes: bytes):
         extract_dir = temp_dir / "dicom"
         extract_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(extract_dir)
+            safe_extract_zip(zf, extract_dir)
 
         return run_slicer_analysis(str(extract_dir))
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def safe_extract_zip(zf: zipfile.ZipFile, extract_dir: Path):
+    extract_root = extract_dir.resolve()
+    for info in zf.infolist():
+        normalized_name = info.filename.replace("\\", "/")
+        if not normalized_name or normalized_name.startswith("/"):
+            http_error(400, f"Unsafe ZIP entry path: {info.filename}")
+
+        target = (extract_root / normalized_name).resolve()
+        if target != extract_root and extract_root not in target.parents:
+            http_error(400, f"Unsafe ZIP entry path: {info.filename}")
+
+        if info.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(info, "r") as src, open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+
+
+def allowed_origins():
+    return [
+        origin.strip()
+        for origin in os.getenv("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS).split(",")
+        if origin.strip()
+    ]
+
+
 if FastAPI is not None:
     app = FastAPI(title="Local Slicer Service")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=os.getenv(
-            "ALLOWED_ORIGINS",
-            "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,https://neurologist-ai.vercel.app,https://ctscan-analyzer.vercel.app",
-        ).split(","),
+        allow_origins=allowed_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -220,11 +260,20 @@ else:
 
 
 class LocalSlicerHandler(BaseHTTPRequestHandler):
+    def cors_origin(self):
+        origin = self.headers.get("origin")
+        if not origin:
+            return None
+        return origin if origin in allowed_origins() else ""
+
     def send_json(self, status, payload):
         body = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("content-type", "application/json")
-        self.send_header("access-control-allow-origin", "*")
+        cors_origin = self.cors_origin()
+        if cors_origin:
+            self.send_header("access-control-allow-origin", cors_origin)
+            self.send_header("vary", "Origin")
         self.send_header("access-control-allow-methods", "GET,POST,OPTIONS")
         self.send_header("access-control-allow-headers", "*")
         self.send_header("access-control-allow-private-network", "true")
@@ -233,8 +282,14 @@ class LocalSlicerHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header("access-control-allow-origin", "*")
+        cors_origin = self.cors_origin()
+        if self.headers.get("origin") and not cors_origin:
+            self.send_response(403)
+        else:
+            self.send_response(204)
+        if cors_origin:
+            self.send_header("access-control-allow-origin", cors_origin)
+            self.send_header("vary", "Origin")
         self.send_header("access-control-allow-methods", "GET,POST,OPTIONS")
         self.send_header("access-control-allow-headers", "*")
         self.send_header("access-control-allow-private-network", "true")

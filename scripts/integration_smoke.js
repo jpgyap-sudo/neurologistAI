@@ -8,7 +8,8 @@ const requiredPrompts = [
   'neurology_agent.md',
   'medication_review_agent.md',
   'rehab_agent.md',
-  'research_librarian_agent.md'
+  'research_librarian_agent.md',
+  'mri_brain_agent.md'
 ];
 console.log('=== Agent Prompt Files ===');
 for (const f of requiredPrompts) {
@@ -39,19 +40,38 @@ console.log('keys:', Object.keys(chatMod));
 const AGENT_KEYWORDS = {
   radiology: ['scan', 'ct', 'mri', 'ventricle', 'hydrocephalus', 'desh', 'imaging', 'report', 'x-ray', 'ultrasound', 'pet', 'angiography', 'radiograph', 'tomography', 'contrast', 'effacement', 'sulci', 'fissure', 'evans index', 'callosal angle', 'temporal horn', 'edema', 'flair', 't1', 't2', 'dwu', 'dwi', 'slice', 'dicom', 'attenuation', 'hyperdense', 'hypodense', 'mass effect', 'midline shift'],
   neurology: ['neuro', 'consciousness', 'mcs', 'crs-r', 'seizure', 'stroke', 'icp', 'gcs', 'coma', 'vegetative', 'minimally conscious', 'alertness', 'arousal', 'cognition', 'dementia', 'parkinson', 'als', 'myasthenia', 'meningitis', 'encephalitis', 'subarachnoid', 'subdural', 'epidural', 'hematoma', 'aneurysm', 'vasospasm', 'cerebral perfusion', 'herniation', 'brain death', 'neuro exam', 'pupil', 'reflex', 'tone', 'clonus', 'babinski', 'nystagmus', 'aphasia', 'apraxia', 'ataxia', 'neuropathy', 'myelopathy', 'synkinesis'],
+  nph_ex_vacuo: ['nph vs ex vacuo', 'ex vacuo', 'shunt responsive', 'csf drainage response', 'tap test', 'hydrocephalus ex vacuo differentiation', 'normal pressure hydrocephalus vs atrophy'],
   medication: ['drug', 'med', 'amantadine', 'baclofen', 'interaction', 'prescription', 'pharmacy', 'pharmacology', 'dose', 'dosage', 'taper', 'withdrawal', 'side effect', 'adverse', 'contraindication', 'sedative', 'hypnotic', 'antipsychotic', 'anticholinergic', 'antiepileptic', 'antihypertensive', 'neurostimulant', 'methylphenidate', 'modafinil', 'tizanidine', 'antibiotic', 'vancomycin', 'phenytoin', 'levetiracetam', 'mannitol', 'hypertonic', 'aspirin', 'clopidogrel', 'warfarin', 'heparin', ' doac ', 'anticoagulant', 'thrombolytic', 'rtpa', 'alteplase'],
   rehab: ['therapy', 'rehab', 'pt', 'ot', 'speech', 'swallow', 'mobility', 'physical therapy', 'occupational therapy', 'physiotherapy', 'speech therapy', 'slt', 'splint', 'brace', 'walker', 'wheelchair', 'gait', 'balance', 'transfer', 'bowel', 'bladder', 'spasticity', 'contracture', 'pressure sore', 'bedsore', 'decubitus', 'learned non-use', 'constraint induced', 'cims', 'bobath', 'ndt', 'functional electrical stimulation', 'fes', 'botulinum', 'botox', 'tone', 'rom', 'prom', 'arom', 'mrc', 'fac', 'fm ', 'fugl-meyer', 'barthel', 'mrs', 'rankin'],
-  research: ['study', 'evidence', 'paper', 'pubmed', 'trial', 'guideline', 'systematic review', 'meta-analysis', 'cohort', 'case series', 'case report', 'randomized', 'rct', 'clinical trial', 'phase ', 'protocol', 'inclusion', 'exclusion', 'endpoint', 'outcome', 'biomarker', 'efficacy', 'effectiveness', 'recommendation', 'consensus', 'society', 'aans', 'cns', 'aan', 'nice', 'sign', 'asa', 'esh', 'ich e9', 'ich e6', 'gcp', 'prisma', 'cochrane', 'medline', 'scopus', 'embase', 'cinahl', 'literature', 'bibliography', 'citation', 'reference']
+  research: ['study', 'evidence', 'paper', 'pubmed', 'trial', 'guideline', 'systematic review', 'meta-analysis', 'cohort', 'case series', 'case report', 'randomized', 'rct', 'clinical trial', 'phase ', 'protocol', 'inclusion', 'exclusion', 'endpoint', 'outcome', 'biomarker', 'efficacy', 'effectiveness', 'recommendation', 'consensus', 'society', 'aans', 'cns', 'aan', 'nice', 'sign', 'asa', 'esh', 'ich e9', 'ich e6', 'gcp', 'prisma', 'cochrane', 'medline', 'scopus', 'embase', 'cinahl', 'literature', 'bibliography', 'citation', 'reference'],
+  mri_brain: ['mri brain', 'brain mri', 'mr brain', 'brain mr', 'mri specialist', 'mri neuroradiology', 'mri brain evans', 'mri desh', 'mri callosal', 'mri ventriculomegaly', 'mri nph', 'mri hydrocephalus', 'mri sequence', 'mri quality', 'mri artifact', 'mri flair', 'mri t1', 'mri t2', 'mri transependymal']
 };
 
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function keywordMatches(text, keyword) {
+  const compact = String(keyword).trim().toLowerCase();
+  if (!compact) return false;
+  const escaped = escapeRegex(compact).replace(/\s+/g, '\\s+');
+  if (/^[a-z0-9]+(?:\s+[a-z0-9]+)*$/.test(compact)) {
+    return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+  }
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(text);
+}
+
 function classifyAgent(message) {
-  const lower = message.toLowerCase();
+  const lower = String(message || '').toLowerCase();
   let bestAgent = 'neurology';
   let bestScore = 0;
   for (const [agent, keywords] of Object.entries(AGENT_KEYWORDS)) {
     let score = 0;
     for (const kw of keywords) {
-      if (lower.includes(kw.toLowerCase())) score += 1;
+      if (keywordMatches(lower, kw)) score += 1;
+    }
+    if (agent === 'mri_brain' && /\b(?:mri|mr)\b/i.test(lower) && /\b(?:brain|ventric|hydrocephalus|nph|desh|evans|callosal|flair|t1|t2)\b/i.test(lower)) {
+      score += 2;
     }
     if (score > bestScore) {
       bestScore = score;
@@ -76,6 +96,9 @@ console.log(JSON.stringify(classifyAgent('What does the CT scan show for hydroce
 console.log(JSON.stringify(classifyAgent('Recommended medication for stroke recovery?')));
 console.log(JSON.stringify(classifyAgent('Physical therapy for spasticity?')));
 console.log(JSON.stringify(classifyAgent('Latest PubMed research on NPH?')));
+const mriBrainClassification = classifyAgent('mri brain evans index and desh pattern');
+console.log(JSON.stringify(mriBrainClassification));
+console.assert(mriBrainClassification.agent === 'mri_brain', 'MRI brain query should route to mri_brain');
 
 console.log('\n=== computeConfidence Smoke Tests ===');
 console.log(computeConfidence({agent:'radiology', overlapScore:2, localMatches:[{}], webResult:{sources:[{}]}}));
