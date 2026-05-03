@@ -8,6 +8,8 @@ import uuid
 import tempfile
 import shutil
 import zipfile
+import time
+import traceback
 
 try:
     from dotenv import load_dotenv
@@ -260,6 +262,10 @@ else:
 
 
 class LocalSlicerHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] {self.address_string()} - {format % args}")
+
     def cors_origin(self):
         origin = self.headers.get("origin")
         if not origin:
@@ -274,6 +280,7 @@ class LocalSlicerHandler(BaseHTTPRequestHandler):
         if cors_origin:
             self.send_header("access-control-allow-origin", cors_origin)
             self.send_header("vary", "Origin")
+            self.send_header("access-control-allow-credentials", "true")
         self.send_header("access-control-allow-methods", "GET,POST,OPTIONS")
         self.send_header("access-control-allow-headers", "*")
         self.send_header("access-control-allow-private-network", "true")
@@ -290,6 +297,7 @@ class LocalSlicerHandler(BaseHTTPRequestHandler):
         if cors_origin:
             self.send_header("access-control-allow-origin", cors_origin)
             self.send_header("vary", "Origin")
+            self.send_header("access-control-allow-credentials", "true")
         self.send_header("access-control-allow-methods", "GET,POST,OPTIONS")
         self.send_header("access-control-allow-headers", "*")
         self.send_header("access-control-allow-private-network", "true")
@@ -297,14 +305,22 @@ class LocalSlicerHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if urlparse(self.path).path == "/health":
-            self.send_json(200, health_payload())
-            return
-        self.send_json(404, {"error": "not_found"})
+        start = time.time()
+        path = urlparse(self.path).path
+        try:
+            if path == "/health":
+                self.send_json(200, health_payload())
+                return
+            self.send_json(404, {"error": "not_found", "detail": f"No route for {path}"})
+        finally:
+            duration = (time.time() - start) * 1000
+            print(f"  -> GET {path} {self.status_code if hasattr(self, 'status_code') else '?'} in {duration:.1f}ms")
 
     def do_POST(self):
+        start = time.time()
+        path = urlparse(self.path).path
+        client = self.address_string()
         try:
-            path = urlparse(self.path).path
             if path == "/upload-and-analyze":
                 length = int(self.headers.get("content-length", "0"))
                 body = self.rfile.read(length)
@@ -323,16 +339,28 @@ class LocalSlicerHandler(BaseHTTPRequestHandler):
             if path == "/analyze-dicom":
                 self.send_json(200, run_legacy_analysis(payload.get("input_dir", ""), payload.get("output_dir", "")))
                 return
-            self.send_json(404, {"error": "not_found"})
+            self.send_json(404, {"error": "not_found", "detail": f"No route for {path}"})
         except ValueError as err:
-            self.send_json(400, {"error": "bad_request", "detail": str(err)})
+            print(f"  -> [{client}] ValueError on {path}: {err}")
+            self.send_json(400, {"error": "bad_request", "detail": str(err), "path": path})
         except subprocess.TimeoutExpired:
-            self.send_json(504, {"error": "slicer_timeout", "detail": "Slicer analysis timed out after 15 minutes."})
+            print(f"  -> [{client}] Slicer timeout on {path}")
+            self.send_json(504, {"error": "slicer_timeout", "detail": "Slicer analysis timed out after 15 minutes.", "path": path})
         except Exception as err:
+            print(f"  -> [{client}] Exception on {path}: {err}")
+            traceback.print_exc()
             if HTTPException is not None and isinstance(err, HTTPException):
-                self.send_json(err.status_code, {"error": "http_exception", "detail": err.detail})
+                self.send_json(err.status_code, {"error": "http_exception", "detail": err.detail, "path": path})
                 return
-            self.send_json(500, {"error": "slicer_service_failed", "detail": str(err)})
+            self.send_json(500, {
+                "error": "slicer_service_failed",
+                "detail": str(err),
+                "path": path,
+                "tip": "Check that Slicer is installed, SLICER_EXE / SLICER_SCRIPT env vars are correct, and the input path exists."
+            })
+        finally:
+            duration = (time.time() - start) * 1000
+            print(f"  -> POST {path} completed in {duration:.1f}ms")
 
 
 def main():
