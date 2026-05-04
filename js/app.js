@@ -316,18 +316,31 @@
     return out;
   };
 
+  const getEffectiveScale = () => {
+    const item = state.dicomFiles[state.activeIndex];
+    const imgW = item ? item.width : (state.generalFiles[state.activeGeneralIndex] ? 512 : 512);
+    const imgH = item ? item.height : (state.generalFiles[state.activeGeneralIndex] ? 512 : 512);
+    const fitScale = getFitScale(imgW, imgH);
+    return state.scale * fitScale;
+  };
+
   const drawAnnotations = () => {
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
+    const item = state.dicomFiles[state.activeIndex];
+    const imgW = item ? item.width : canvas.width;
+    const imgH = item ? item.height : canvas.height;
+    const fitScale = getFitScale(imgW, imgH);
+    const effectiveScale = state.scale * fitScale;
+    const cx = imgW / 2;
+    const cy = imgH / 2;
     ctx.save();
-    ctx.translate(cx + state.panX, cy + state.panY);
-    ctx.scale(state.scale, state.scale);
-    ctx.translate(-cx, -cy);
+    ctx.translate(canvas.clientWidth / 2, canvas.clientHeight / 2);
+    ctx.scale(effectiveScale, effectiveScale);
+    ctx.translate(-cx + state.panX, -cy + state.panY);
 
     for (const ann of state.annotations) {
       ctx.strokeStyle = ann.color || '#f59e0b';
       ctx.fillStyle = ann.color || '#f59e0b';
-      ctx.lineWidth = 2 / state.scale;
+      ctx.lineWidth = 2 / effectiveScale;
       if (ann.type === 'measure') {
         ctx.beginPath();
         ctx.moveTo(ann.points[0].x, ann.points[0].y);
@@ -341,7 +354,7 @@
         ctx.fillStyle = '#111';
         ctx.fillRect(mx - 20, my - 10, 70, 16);
         ctx.fillStyle = '#f59e0b';
-        ctx.font = `${12 / state.scale}px sans-serif`;
+        ctx.font = `${12 / effectiveScale}px sans-serif`;
         ctx.fillText(`${mm.toFixed(1)} mm`, mx - 18, my + 2);
       } else if (ann.type === 'rect') {
         const w = ann.points[1].x - ann.points[0].x;
@@ -349,9 +362,9 @@
         ctx.strokeRect(ann.points[0].x, ann.points[0].y, w, h);
         if (ann.text) {
           ctx.fillStyle = 'rgba(0,0,0,0.6)';
-          ctx.fillRect(ann.points[0].x, ann.points[0].y - 14 / state.scale, ctx.measureText(ann.text).width + 6, 14 / state.scale);
+          ctx.fillRect(ann.points[0].x, ann.points[0].y - 14 / effectiveScale, ctx.measureText(ann.text).width + 6, 14 / effectiveScale);
           ctx.fillStyle = ann.color;
-          ctx.font = `${12 / state.scale}px sans-serif`;
+          ctx.font = `${12 / effectiveScale}px sans-serif`;
           ctx.fillText(ann.text, ann.points[0].x + 2, ann.points[0].y - 2);
         }
       } else if (ann.type === 'ellipse') {
@@ -364,10 +377,10 @@
         ctx.stroke();
       } else if (ann.type === 'annotate') {
         ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillRect(ann.points[0].x, ann.points[0].y, ctx.measureText(ann.text).width + 6, 16 / state.scale);
+        ctx.fillRect(ann.points[0].x, ann.points[0].y, ctx.measureText(ann.text).width + 6, 16 / effectiveScale);
         ctx.fillStyle = ann.color;
-        ctx.font = `${12 / state.scale}px sans-serif`;
-        ctx.fillText(ann.text, ann.points[0].x + 2, ann.points[0].y + 12 / state.scale);
+        ctx.font = `${12 / effectiveScale}px sans-serif`;
+        ctx.fillText(ann.text, ann.points[0].x + 2, ann.points[0].y + 12 / effectiveScale);
       }
     }
 
@@ -412,12 +425,29 @@
     return 1;
   };
 
+  const fitCanvasToViewport = () => {
+    const viewportRect = viewport.getBoundingClientRect();
+    const vpW = viewportRect.width;
+    const vpH = viewportRect.height;
+    canvas.style.width = vpW + 'px';
+    canvas.style.height = vpH + 'px';
+  };
+
+  const getFitScale = (imgW, imgH) => {
+    const vpW = canvas.clientWidth || canvas.width;
+    const vpH = canvas.clientHeight || canvas.height;
+    return Math.min(vpW / imgW, vpH / imgH);
+  };
+
   const renderSlice = () => {
     const item = state.dicomFiles[state.activeIndex];
     if (!item || !item.pixelData) return;
     const { width, height, pixelData } = item;
+    // Set canvas internal resolution to image dimensions
     canvas.width = width;
     canvas.height = height;
+    // Size canvas element to fill viewport
+    fitCanvasToViewport();
     const imgData = computeWindowedImageData(pixelData, width, height, state.ww, state.wl);
     // putImageData ignores canvas transforms, so use an offscreen canvas + drawImage
     const offscreen = document.createElement('canvas');
@@ -426,10 +456,15 @@
     offscreen.getContext('2d').putImageData(imgData, 0, 0);
     const cx = width / 2;
     const cy = height / 2;
+    // Base fit-to-viewport scale
+    const fitScale = getFitScale(width, height);
     ctx.save();
-    ctx.translate(cx + state.panX, cy + state.panY);
-    ctx.scale(state.scale, state.scale);
-    ctx.translate(-cx, -cy);
+    // 1. Translate to center of canvas element
+    ctx.translate(canvas.clientWidth / 2, canvas.clientHeight / 2);
+    // 2. Apply user zoom on top of fit scale
+    ctx.scale(state.scale * fitScale, state.scale * fitScale);
+    // 3. Apply user pan (in image-space coordinates)
+    ctx.translate(-cx + state.panX, -cy + state.panY);
     ctx.drawImage(offscreen, 0, 0);
     ctx.restore();
     drawAnnotations();
@@ -450,14 +485,18 @@
   };
 
   const drawGeneralImage = (img) => {
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
+    const width = img.naturalWidth;
+    const height = img.naturalHeight;
+    canvas.width = width;
+    canvas.height = height;
+    fitCanvasToViewport();
+    const cx = width / 2;
+    const cy = height / 2;
+    const fitScale = getFitScale(width, height);
     ctx.save();
-    ctx.translate(cx + state.panX, cy + state.panY);
-    ctx.scale(state.scale, state.scale);
-    ctx.translate(-cx, -cy);
+    ctx.translate(canvas.clientWidth / 2, canvas.clientHeight / 2);
+    ctx.scale(state.scale * fitScale, state.scale * fitScale);
+    ctx.translate(-cx + state.panX, -cy + state.panY);
     ctx.drawImage(img, 0, 0);
     ctx.restore();
     drawAnnotations();
@@ -978,10 +1017,20 @@
   // ===== MOUSE INTERACTIONS =====
   const toCanvasCoords = (clientX, clientY) => {
     const rect = canvas.getBoundingClientRect();
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    const x = (clientX - rect.left - (cx + state.panX)) / state.scale + cx;
-    const y = (clientY - rect.top - (cy + state.panY)) / state.scale + cy;
+    const item = state.dicomFiles[state.activeIndex];
+    const imgW = item ? item.width : canvas.width;
+    const imgH = item ? item.height : canvas.height;
+    const fitScale = getFitScale(imgW, imgH);
+    const effectiveScale = state.scale * fitScale;
+    const cx = imgW / 2;
+    const cy = imgH / 2;
+    // Inverse of the render transform:
+    // screenX = (imgX - cx + panX) * effectiveScale + canvas.clientWidth/2
+    // So: imgX = (screenX - canvas.clientWidth/2) / effectiveScale + cx - panX
+    const screenX = clientX - rect.left;
+    const screenY = clientY - rect.top;
+    const x = (screenX - canvas.clientWidth / 2) / effectiveScale + cx - state.panX;
+    const y = (screenY - canvas.clientHeight / 2) / effectiveScale + cy - state.panY;
     return { x, y };
   };
 
@@ -1366,6 +1415,20 @@
       sendChat();
     });
   });
+
+  // ===== WINDOW RESIZE =====
+  const handleResize = () => {
+    if (state.activeGeneralIndex === -1 && state.dicomFiles.length > 0) {
+      renderSlice();
+    } else if (state.activeGeneralIndex >= 0 && state.generalFiles.length > 0) {
+      const item = state.generalFiles[state.activeGeneralIndex];
+      if (item && item.type.startsWith('image/')) {
+        const cached = state.generalImageCache[item.objectURL];
+        if (cached) drawGeneralImage(cached);
+      }
+    }
+  };
+  window.addEventListener('resize', handleResize);
 
   // Initial greeting
   appendChat(`Hello. I am your neurology and neurosurgery assistant. I can help with:

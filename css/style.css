@@ -289,8 +289,6 @@ label { font-size: 12px; color: #9ca3af; }
 /* ===== VIEWPORT ===== */
 #imageCanvas {
   display: none;
-  max-width: 100%;
-  max-height: 100%;
   cursor: grab;
 }
 #imageCanvas:active { cursor: grabbing; }
