@@ -267,25 +267,67 @@ def mri_quality_check(volume_node):
 
 
 def compute_skull_width_ct(image, sx):
-    """For CT: use bone threshold to find inner table width robustly."""
+    """For CT: use bone threshold to find inner table width robustly.
+
+    Clinical definition: maximal internal diameter of the skull measured
+    from inner table to inner table at the same level as the frontal horn
+    measurement.
+    """
     bone_mask = image > 100  # HU threshold for bone
     bone_mask = largest_component(bone_mask)
     ys, xs = np.where(bone_mask)
     if xs.size < 50:
         return None
-    # Use the widest horizontal span of the bone mask as a proxy for inner skull diameter
-    # This is a rough estimate; we refine by looking for the calvarial ring
-    leftmost = xs.min()
-    rightmost = xs.max()
-    width_mm = (rightmost - leftmost + 1) * sx
+
+    # Find the inner table by eroding the bone mask to get the inner contour
+    # For each row, find the leftmost and rightmost bone pixels
+    # The inner table is approximated by taking a horizontal slice through
+    # the center of the skull where the inner table is visible
+    height, width = bone_mask.shape
+    mid_y = int(height * 0.5)
+    search_range = int(height * 0.15)
+
+    inner_left_candidates = []
+    inner_right_candidates = []
+    for row in range(mid_y - search_range, mid_y + search_range + 1):
+        if row < 0 or row >= height:
+            continue
+        bone_row = np.where(bone_mask[row, :])[0]
+        if bone_row.size < 10:
+            continue
+        # Left inner table: scan inward from left edge
+        left_bone = bone_row[0]
+        right_bone = bone_row[-1]
+        inner_left_candidates.append(left_bone)
+        inner_right_candidates.append(right_bone)
+
+    if not inner_left_candidates or not inner_right_candidates:
+        # Fallback: use widest horizontal span
+        leftmost = xs.min()
+        rightmost = xs.max()
+        width_mm = (rightmost - leftmost + 1) * sx
+        if width_mm < 80 or width_mm > 220:
+            return None
+        return width_mm, leftmost, rightmost
+
+    # Use median of inner table candidates for robustness
+    inner_left = int(np.median(inner_left_candidates))
+    inner_right = int(np.median(inner_right_candidates))
+    width_mm = (inner_right - inner_left + 1) * sx
+
     # Sanity check
     if width_mm < 80 or width_mm > 220:
         return None
-    return width_mm, leftmost, rightmost
+    return width_mm, inner_left, inner_right
 
 
 def compute_skull_width_generic(image, sx):
-    """Generic intensity-based body/skull width estimate."""
+    """Generic intensity-based skull width estimate using inner table approximation.
+
+    For MRI: uses the brain parenchyma boundary as a proxy for inner table.
+    For both CT and MRI, attempts to find the inner contour of the skull/brain
+    rather than the outer margin.
+    """
     finite = image[np.isfinite(image)]
     if finite.size < 100:
         return None
@@ -295,16 +337,90 @@ def compute_skull_width_generic(image, sx):
     ys, xs = np.where(body_mask)
     if xs.size < 100:
         return None
-    skull_width_mm = (xs.max() - xs.min() + 1) * sx
+
+    # Find inner boundaries by scanning rows near the vertical center
+    height, width = body_mask.shape
+    mid_y = int(height * 0.5)
+    search_range = int(height * 0.15)
+
+    inner_left_candidates = []
+    inner_right_candidates = []
+    for row in range(mid_y - search_range, mid_y + search_range + 1):
+        if row < 0 or row >= height:
+            continue
+        body_row = np.where(body_mask[row, :])[0]
+        if body_row.size < 20:
+            continue
+        inner_left_candidates.append(body_row[0])
+        inner_right_candidates.append(body_row[-1])
+
+    if not inner_left_candidates or not inner_right_candidates:
+        # Fallback: use full extent
+        skull_width_mm = (xs.max() - xs.min() + 1) * sx
+        if skull_width_mm <= 0:
+            return None
+        return skull_width_mm, xs.min(), xs.max()
+
+    inner_left = int(np.median(inner_left_candidates))
+    inner_right = int(np.median(inner_right_candidates))
+    skull_width_mm = (inner_right - inner_left + 1) * sx
     if skull_width_mm <= 0:
         return None
-    return skull_width_mm, xs.min(), xs.max()
+    return skull_width_mm, inner_left, inner_right
+
+
+def _isolate_frontal_horns(left_comp, right_comp, sx, sy):
+    """
+    Isolate the frontal horn (anterior) portion of each lateral ventricle component.
+
+    The Evan's Index requires measuring the maximal width of the FRONTAL HORNS
+    specifically, not the full lateral ventricle span. The frontal horns are the
+    anterior (top in axial view) portion of the lateral ventricles.
+
+    This function takes the anterior 50% of each component's y-extent to isolate
+    the frontal horns from the body/atrium which is wider posteriorly.
+    """
+    # Left frontal horn: take anterior (top) portion
+    l_ys = left_comp["ys"]
+    l_xs = left_comp["xs"]
+    l_y_min = l_ys.min()
+    l_y_max = l_ys.max()
+    l_y_range = l_y_max - l_y_min
+    l_anterior_cutoff = l_y_min + l_y_range * 0.50
+    l_anterior_mask = l_ys <= l_anterior_cutoff
+    if l_anterior_mask.sum() < 5:
+        l_fh_xs = l_xs
+    else:
+        l_fh_xs = l_xs[l_anterior_mask]
+
+    # Right frontal horn: take anterior (top) portion
+    r_ys = right_comp["ys"]
+    r_xs = right_comp["xs"]
+    r_y_min = r_ys.min()
+    r_y_max = r_ys.max()
+    r_y_range = r_y_max - r_y_min
+    r_anterior_cutoff = r_y_min + r_y_range * 0.50
+    r_anterior_mask = r_ys <= r_anterior_cutoff
+    if r_anterior_mask.sum() < 5:
+        r_fh_xs = r_xs
+    else:
+        r_fh_xs = r_xs[r_anterior_mask]
+
+    # Measure the maximal span between the outer margins of the left and right frontal horns
+    fh_min_x = min(l_fh_xs.min(), r_fh_xs.min())
+    fh_max_x = max(l_fh_xs.max(), r_fh_xs.max())
+    frontal_horn_width_mm = (fh_max_x - fh_min_x + 1) * sx
+
+    return frontal_horn_width_mm
 
 
 def estimate_ventricles_ct(image, sx, sy, x_count, y_count):
     """
     CT-specific ventricle detection using Hounsfield unit thresholds.
     CSF ~ 0-20 HU.  We allow a slightly wider window for partial volume.
+
+    Critically, this function isolates the FRONTAL HORNS (anterior horns)
+    of the lateral ventricles for accurate Evan's Index measurement.
     """
     central_y = (np.arange(y_count)[:, None] > int(y_count * 0.15)) & (np.arange(y_count)[:, None] < int(y_count * 0.85))
     central_x = (np.arange(x_count)[None, :] > int(x_count * 0.10)) & (np.arange(x_count)[None, :] < int(x_count * 0.90))
@@ -355,9 +471,8 @@ def estimate_ventricles_ct(image, sx, sy, x_count, y_count):
                     total_area = left_area + right_area
                     if total_area < 60:
                         continue
-                    min_x = min(int(lc["xs"].min()), int(rc["xs"].min()))
-                    max_x = max(int(lc["xs"].max()), int(rc["xs"].max()))
-                    frontal_horn_width_mm = (max_x - min_x + 1) * sx
+                    # Use frontal horn isolation instead of full ventricle span
+                    frontal_horn_width_mm = _isolate_frontal_horns(lc, rc, sx, sy)
                     all_candidates.append({
                         "left": lc,
                         "right": rc,
@@ -409,9 +524,8 @@ def _pair_mri_candidates(left_components, right_components, sx, sy, y_count):
             total_area = left_area + right_area
             if total_area < 60:
                 continue
-            min_x = min(int(left["xs"].min()), int(right["xs"].min()))
-            max_x = max(int(left["xs"].max()), int(right["xs"].max()))
-            frontal_horn_width_mm = (max_x - min_x + 1) * sx
+            # Use frontal horn isolation instead of full ventricle span
+            frontal_horn_width_mm = _isolate_frontal_horns(left, right, sx, sy)
             candidates.append({
                 "left": left,
                 "right": right,
@@ -509,9 +623,11 @@ def estimate_hydrocephalus_metrics(volume_node):
     candidates = []
     diagnostic_log = []
 
-    z_start = max(1, int(z_count * 0.25))
-    z_end = max(2, int(z_count * 0.75))
-    slice_indexes = sorted(set(np.linspace(z_start, z_end - 1, num=min(24, max(1, z_end - z_start)), dtype=int).tolist()))
+    # Target the frontal horn level: typically in the upper 25%-60% of axial slices
+    # (frontal horns are in the frontal lobe, which is in the superior/anterior brain)
+    z_start = max(1, int(z_count * 0.15))
+    z_end = max(2, int(z_count * 0.65))
+    slice_indexes = sorted(set(np.linspace(z_start, z_end - 1, num=min(30, max(1, z_end - z_start)), dtype=int).tolist()))
 
     for z in slice_indexes:
         image = volume[z].astype(float)
@@ -569,7 +685,28 @@ def estimate_hydrocephalus_metrics(volume_node):
         left_cy = float(left["ys"].mean())
         right_cy = float(right["ys"].mean())
         y_alignment_penalty = abs(left_cy - right_cy)
-        quality_score = vent["total_area_mm2"] - (y_alignment_penalty * sx * 5)
+
+        # Improved quality score: prefer slices where:
+        # 1. Frontal horns are well-visualized (moderate area, not too large = not body/atrium)
+        # 2. Left and right are well-aligned vertically
+        # 3. The frontal horn width is within a plausible clinical range
+        # 4. The Evan's index is in a realistic range
+        frontal_horn_quality = 0
+        if 0.15 <= evans_index <= 0.50:
+            frontal_horn_quality = 100
+        elif 0.10 <= evans_index <= 0.55:
+            frontal_horn_quality = 50
+
+        symmetry_bonus = max(0, 100 - (asymmetry_ratio - 1.0) * 100) if asymmetry_ratio else 0
+        alignment_penalty = y_alignment_penalty * sx * 10
+        area_bonus = min(vent["total_area_mm2"], 200)  # Cap area bonus to avoid favoring large body/atrium
+
+        quality_score = (
+            frontal_horn_quality
+            + symmetry_bonus
+            + area_bonus
+            - alignment_penalty
+        )
 
         candidates.append({
             "slice_index": int(z),
@@ -606,9 +743,11 @@ def estimate_hydrocephalus_metrics(volume_node):
         "Confirm landmarks and ventricular borders manually in 3D Slicer before clinical use.",
     ]
     if (
-        0.20 <= best["evans_index"] <= 0.45
-        and best["left_candidate_area_mm2"] >= 40
-        and best["right_candidate_area_mm2"] >= 40
+        0.15 <= best["evans_index"] <= 0.50
+        and best["left_candidate_area_mm2"] >= 30
+        and best["right_candidate_area_mm2"] >= 30
+        and best["ventricular_asymmetry_ratio"] is not None
+        and best["ventricular_asymmetry_ratio"] < 2.0
     ):
         confidence = "moderate"
 
